@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FitRace Race Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060B11;
+    --panel: #0E141A;
+    --line: #1B3742;
+    --text: #DEE3EC;
+    --muted: #849495;
+    --cyan: #00F0FF;
+    --coral: #FF3366;
+    --gold: #FFD700;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    letter-spacing: -0.02em;
+  }
+  .header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+  }
+  .header-bar h1 {
+    margin: 0;
+  }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  button:hover {
+    background: var(--line);
+    border-color: var(--cyan);
+  }
+  button.primary {
+    background: var(--cyan);
+    color: var(--bg);
+    border-color: var(--cyan);
+  }
+  button.primary:hover {
+    background: #00d4e6;
+  }
+  button.danger {
+    background: var(--coral);
+    color: #fff;
+    border-color: var(--coral);
+  }
+  button.danger:hover {
+    background: #ff1a4d;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 20px;
+    margin-bottom: 30px;
+  }
+  .section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    color: var(--text);
+  }
+  .section h3 {
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    color: var(--muted);
+  }
+  .form-group {
+    margin-bottom: 16px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  input, select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--cyan);
+  }
+  .button-group {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .quick-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .quick-buttons button {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .room-card {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .room-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 12px;
+  }
+  .room-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .room-badge {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid;
+  }
+  .badge-open {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+  .badge-starting {
+    border-color: var(--gold);
+    color: var(--gold);
+  }
+  .badge-running {
+    border-color: var(--coral);
+    color: var(--coral);
+  }
+  .badge-finished {
+    border-color: var(--muted);
+    color: var(--muted);
+  }
+  .room-info {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+    font-size: 13px;
+  }
+  .info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .info-label {
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .info-value {
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .entrant-list {
+    background: rgba(0, 240, 255, 0.05);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    font-family: "JetBrains Mono", monospace;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .entrant-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 12px;
+    padding: 4px 0;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+  }
+  .entrant-row:last-child {
+    border-bottom: none;
+  }
+  .entrant-flag {
+    text-align: center;
+    width: 20px;
+  }
+  .entrant-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .entrant-dist {
+    text-align: right;
+    color: var(--muted);
+  }
+  .entrant-status {
+    text-align: right;
+    font-weight: 500;
+  }
+  .status-finished {
+    color: var(--gold);
+  }
+  .status-dnf {
+    color: var(--coral);
+  }
+  .status-running {
+    color: var(--cyan);
+  }
+  .room-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .room-actions button {
+    flex: 0 0 auto;
+    font-size: 12px;
+  }
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--panel);
+    border: 1px solid var(--coral);
+    border-radius: 4px;
+    padding: 12px 16px;
+    font-size: 12px;
+    z-index: 999;
+    animation: slideIn 0.2s ease-out;
+  }
+  @keyframes slideIn {
+    from {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+  .empty-state {
+    text-align: center;
+    color: var(--muted);
+    padding: 40px 20px;
+  }
+  .rules-note {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="header-bar">
+  <h1>FitRace Race Control</h1>
+  <button onclick="changeKey()">Change key</button>
+</div>
+
+<div class="section">
+  <h2>Create Race</h2>
+  <div class="form-group">
+    <label>Title</label>
+    <input type="text" id="createTitle" placeholder="Race title">
+  </div>
+  <div class="form-group">
+    <label>Distance</label>
+    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+      <input type="number" id="createDistance" placeholder="5000" value="5000" style="flex: 1;">
+    </div>
+    <div class="quick-buttons">
+      <button onclick="setDistance(400)">400m</button>
+      <button onclick="setDistance(1000)">1km</button>
+      <button onclick="setDistance(5000)">5km</button>
+    </div>
+  </div>
+  <div class="form-group">
+    <label>Capacity (optional)</label>
+    <input type="number" id="createCapacity" placeholder="Leave empty for no limit">
+  </div>
+  <div class="form-group">
+    <label>Cutoff (minutes, optional)</label>
+    <input type="text" id="createCutoff" placeholder="auto">
+  </div>
+  <button class="primary" onclick="createRace()" style="width: 100%;">Create Race</button>
+</div>
+
+<div class="section">
+  <h2>Auto Rules</h2>
+  <p class="rules-note">Each rule keeps one open race. It starts waitSeconds after minRunners have joined, or immediately when full.</p>
+
+  <div style="margin-bottom: 20px;">
+    <h3>Add Rule</h3>
+    <div class="form-group">
+      <label>Title</label>
+      <input type="text" id="ruleTitle" placeholder="Rule title">
+    </div>
+    <div class="form-group">
+      <label>Distance (m)</label>
+      <input type="number" id="ruleDistance" placeholder="5000" value="5000">
+    </div>
+    <div class="form-group">
+      <label>Capacity (optional)</label>
+      <input type="number" id="ruleCapacity" placeholder="Leave empty">
+    </div>
+    <div class="form-group">
+      <label>Cutoff (minutes, optional)</label>
+      <input type="text" id="ruleCutoff" placeholder="auto">
+    </div>
+    <div class="form-group">
+      <label>Min runners (default 2)</label>
+      <input type="number" id="ruleMinRunners" placeholder="2" value="2">
+    </div>
+    <div class="form-group">
+      <label>Wait seconds (default 60)</label>
+      <input type="number" id="ruleWait" placeholder="60" value="60">
+    </div>
+    <button class="primary" onclick="addRule()" style="width: 100%;">Add Rule</button>
+  </div>
+
+  <div>
+    <h3 style="margin-bottom: 12px;">Existing Rules</h3>
+    <div id="rulesList"></div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Rooms</h2>
+  <div id="roomsList" class="empty-state">Loading rooms...</div>
+</div>
+
+<script>
+  // 選手姓名、國碼都是選手端自填的，一律視為不可信；連引號也要跳脫，放進屬性才安全
+  const escape = (str) =>
+    String(str ?? "").replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  let adminKey = null;
+
+  function getKey() {
+    try {
+      return localStorage.getItem("fitraceAdminKey");
+    } catch {
+      return null;
+    }
+  }
+
+  function setKeyStorage(key) {
+    try {
+      localStorage.setItem("fitraceAdminKey", key);
+    } catch {}
+  }
+
+  function changeKey() {
+    const key = prompt("Enter admin key:");
+    if (key !== null) {
+      adminKey = key;
+      setKeyStorage(key);
+      load();
+    }
+  }
+
+  function toast(msg) {
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = msg;
+    document.body.append(t);
+    setTimeout(() => t.remove(), 4000);
+  }
+
+  async function api(method, path, body = null) {
+    try {
+      const opts = {
+        method,
+        headers: { "Authorization": `Bearer ${adminKey}` },
+      };
+      if (body) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      if (res.status === 401) {
+        changeKey();
+        throw new Error("Unauthorized");
+      }
+      // 204（結束、取消、刪除）沒有 body，直接 res.json() 會丟錯，讓成功的操作顯示成失敗
+      const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(`Error: ${data.error || res.statusText}`);
+        throw new Error(data.error);
+      }
+      return data;
+    } catch (err) {
+      if (err.message !== "Unauthorized") console.error(err);
+      throw err;
+    }
+  }
+
+  function setDistance(dist) {
+    document.getElementById("createDistance").value = dist;
+  }
+
+  async function createRace() {
+    const title = document.getElementById("createTitle").value.trim();
+    const dist = parseInt(document.getElementById("createDistance").value) || 5000;
+    const cap = document.getElementById("createCapacity").value.trim();
+    const cutoff = document.getElementById("createCutoff").value.trim();
+
+    if (!title) {
+      toast("Title required");
+      return;
+    }
+
+    const body = { title, distanceM: dist };
+    if (cap) body.capacity = parseInt(cap);
+    if (cutoff && cutoff !== "auto") body.cutoffMinutes = parseInt(cutoff);
+
+    try {
+      await api("POST", "/admin/rooms", body);
+      document.getElementById("createTitle").value = "";
+      document.getElementById("createCapacity").value = "";
+      document.getElementById("createCutoff").value = "";
+      load();
+    } catch {}
+  }
+
+  async function addRule() {
+    const title = document.getElementById("ruleTitle").value.trim();
+    const dist = parseInt(document.getElementById("ruleDistance").value) || 5000;
+    const cap = document.getElementById("ruleCapacity").value.trim();
+    const cutoff = document.getElementById("ruleCutoff").value.trim();
+    const minRun = parseInt(document.getElementById("ruleMinRunners").value) || 2;
+    const wait = parseInt(document.getElementById("ruleWait").value) || 60;
+
+    if (!title) {
+      toast("Title required");
+      return;
+    }
+
+    const body = { title, distanceM: dist, minRunners: minRun, waitSeconds: wait };
+    if (cap) body.capacity = parseInt(cap);
+    if (cutoff && cutoff !== "auto") body.cutoffMinutes = parseInt(cutoff);
+
+    try {
+      await api("POST", "/admin/rules", body);
+      document.getElementById("ruleTitle").value = "";
+      document.getElementById("ruleCapacity").value = "";
+      document.getElementById("ruleCutoff").value = "";
+      load();
+    } catch {}
+  }
+
+  async function deleteRule(ruleId) {
+    if (!confirm("Delete rule?")) return;
+    try {
+      await api("DELETE", `/admin/rules/${ruleId}`);
+      load();
+    } catch {}
+  }
+
+  function formatTime(ms) {
+    const m = Math.floor(ms / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function formatTimeInfo(status, startAt, cutoffMs, closedAt, serverTime) {
+    const now = serverTime;
+    if (status === "OPEN") {
+      if (closedAt === null) return "Open";
+      const waitMs = closedAt - now;
+      const remain = Math.max(0, waitMs);
+      return `auto start in ${formatTime(remain)}`;
+    }
+    if (status === "STARTING") {
+      const remain = Math.max(0, startAt - now);
+      return `T-${Math.ceil(remain / 1000)}`;
+    }
+    if (status === "RUNNING") {
+      const elapsed = now - startAt;
+      const cutoffEnd = startAt + cutoffMs;
+      const cutoffRemain = Math.max(0, cutoffEnd - now);
+      return `${formatTime(elapsed)} / cutoff ${formatTime(cutoffRemain)}`;
+    }
+    if (status === "FINISHED") {
+      return "Closed";
+    }
+    return "—";
+  }
+
+  async function load() {
+    try {
+      const data = await api("GET", "/admin/rooms");
+      const serverTime = data.serverTime;
+
+      const rooms = data.rooms || [];
+      if (rooms.length === 0) {
+        document.getElementById("roomsList").innerHTML = '<div class="empty-state">No rooms</div>';
+      } else {
+        document.getElementById("roomsList").innerHTML = rooms.map(room => `
+          <div class="room-card">
+            <div class="room-header">
+              <div>
+                <div class="room-title">${escape(room.title)}</div>
+                <div style="font-size: 11px; color: var(--muted); font-family: JetBrains Mono; margin-top: 2px;">
+                  ${escape(room.roomId)}
+                </div>
+              </div>
+              <div class="room-badge badge-${room.status.toLowerCase()}">
+                ${escape(room.status)}
+              </div>
+            </div>
+
+            <div class="room-info">
+              <div class="info-item">
+                <span class="info-label">Distance</span>
+                <span class="info-value">${room.raceDistanceMeters.toLocaleString()}m</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Entrants</span>
+                <span class="info-value">${room.runnerCount}${room.capacity ? ' / ' + room.capacity : ''}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Time</span>
+                <span class="info-value">${escape(formatTimeInfo(room.status, room.startAtServerTime, room.cutoffMs, room.autoStartAtServerTime, serverTime))}</span>
+              </div>
+            </div>
+
+            ${room.entrants.length > 0 ? `
+              <div class="entrant-list">
+                ${room.entrants.map(e => `
+                  <div class="entrant-row">
+                    <div class="entrant-flag">${escape(e.country || '—')}</div>
+                    <div class="entrant-name">${escape(e.name)}</div>
+                    <div class="entrant-dist">${e.distance.toLocaleString()}m</div>
+                    <div class="entrant-status ${e.status === 'FINISHED' ? 'status-finished' : e.status === 'DNF' ? 'status-dnf' : e.status === 'RUNNING' ? 'status-running' : ''}">
+                      ${e.status === 'FINISHED' && e.finishTimeMs !== null ? formatTime(e.finishTimeMs) : escape(e.status)}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+
+            <div class="room-actions">
+              ${room.status === 'OPEN' ? `
+                <button class="primary" onclick="startRoom('${room.roomId}')" ${room.runnerCount === 0 ? 'disabled' : ''}>START</button>
+              ` : ''}
+              ${(room.status === 'STARTING' || room.status === 'RUNNING') ? `
+                <button class="danger" onclick="endRoom('${room.roomId}')">END NOW</button>
+              ` : ''}
+              ${room.status === 'OPEN' ? `
+                <button class="danger" onclick="cancelRoom('${room.roomId}')">CANCEL</button>
+              ` : ''}
+              ${room.status === 'FINISHED' ? `
+                <button class="danger" onclick="deleteRoom('${room.roomId}')">REMOVE</button>
+              ` : ''}
+              <a href="/display?room=${encodeURIComponent(room.roomId)}" target="_blank" style="text-decoration: none;">
+                <button style="cursor: pointer;">Big screen ↗</button>
+              </a>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Load rules
+      const rulesData = await api("GET", "/admin/rules");
+      const rules = rulesData?.rules || [];
+      if (rules.length === 0) {
+        document.getElementById("rulesList").innerHTML = '<div style="color: var(--muted); font-size: 12px;">No rules</div>';
+      } else {
+        document.getElementById("rulesList").innerHTML = rules.map(rule => `
+          <div class="room-card" style="padding: 12px; margin-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: start;">
+              <div>
+                <div style="font-weight: 600; font-size: 13px;">${escape(rule.title)}</div>
+                <div style="font-size: 11px; color: var(--muted); font-family: JetBrains Mono; margin-top: 2px;">
+                  ${rule.distanceM}m / min${rule.minRunners} / wait${rule.waitSeconds}s${rule.capacity ? ' / cap' + rule.capacity : ''}
+                </div>
+              </div>
+              <button class="danger" onclick="deleteRule('${rule.ruleId}')" style="font-size: 11px;">Delete</button>
+            </div>
+          </div>
+        `).join('');
+      }
+    } catch {}
+  }
+
+  async function startRoom(roomId) {
+    try {
+      await api("POST", `/admin/rooms/${roomId}/start`);
+      load();
+    } catch {}
+  }
+
+  async function endRoom(roomId) {
+    if (!confirm("End race?")) return;
+    try {
+      await api("POST", `/admin/rooms/${roomId}/end`);
+      load();
+    } catch {}
+  }
+
+  async function cancelRoom(roomId) {
+    if (!confirm("Cancel race?")) return;
+    try {
+      await api("DELETE", `/admin/rooms/${roomId}`);
+      load();
+    } catch {}
+  }
+
+  async function deleteRoom(roomId) {
+    if (!confirm("Remove race?")) return;
+    try {
+      await api("DELETE", `/admin/rooms/${roomId}`);
+      load();
+    } catch {}
+  }
+
+  // Init
+  adminKey = getKey();
+  if (!adminKey) {
+    changeKey();
+  } else {
+    load();
+  }
+
+  // Poll every 2s
+  setInterval(load, 2000);
+</script>
+</body>
+</html>

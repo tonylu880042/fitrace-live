@@ -1,0 +1,12 @@
+Copyright (c) 2026 Tony Lu. All rights reserved.
+
+FitRace and FitRace Live are proprietary. This software and its source code are
+confidential. No part of it may be copied, modified, distributed, sublicensed, or
+used, in whole or in part, without the prior written permission of the copyright
+holder.
+
+Third-party components remain under their own licenses, including:
+- Space Grotesk and JetBrains Mono fonts (android/app/src/main/res/font/):
+  SIL Open Font License 1.1
+- Rust crates declared in server/Cargo.toml and Android libraries declared in
+  android/app/build.gradle.kts, under their respective licenses

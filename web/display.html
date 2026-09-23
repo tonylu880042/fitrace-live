@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FitRace Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0A0E14;
+    --card: #151C24;
+    --card-2: #111821;
+    --lead-card: #0D131B;
+    --border: #242E3A;
+    --line: #232C36;
+    --track: #232C36;
+    --text: #FFFFFF;
+    --muted: #8B97A5;
+    --cyan: #00F0FF;
+    --coral: #FF3366;
+    --gold: #FFD700;
+    --gold-deep: #D9A521;
+
+    --gap: 14px;
+    --row-h: 108px;
+    --lead-h: 150px;
+    --pad: clamp(18px, 3.2vw, 72px);
+    /* 廣播間隔 400ms，補間略長，封包抖動時動畫才不會斷格 */
+    --lerp: 500ms;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    padding: clamp(18px, 2.6vw, 44px) var(--pad);
+    overflow-x: hidden;
+  }
+  .lbl {
+    font-size: clamp(10px, .85vw, 15px); font-weight: 500; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap;
+  }
+
+  /* ───────── HEADER ───────── */
+  header { display: flex; align-items: center; gap: clamp(14px, 1.8vw, 34px); }
+  .brand {
+    font-weight: 700; font-style: italic; letter-spacing: -.02em;
+    font-size: clamp(30px, 3.4vw, 54px); line-height: 1; white-space: nowrap;
+  }
+  .event {
+    font-weight: 500; letter-spacing: .04em; text-transform: uppercase;
+    font-size: clamp(14px, 1.5vw, 26px); color: #E6EAF0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  header .spacer { flex: 1; }
+  .timer { display: flex; align-items: center; gap: 10px; }
+  .timer svg { width: clamp(20px, 1.7vw, 28px); height: clamp(20px, 1.7vw, 28px); flex: none; }
+  .clock {
+    font-weight: 700; font-size: clamp(24px, 2.5vw, 40px); line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em; white-space: nowrap;
+  }
+  .clock.count { color: var(--gold); }
+  .heat {
+    background: #2A3139; color: #C7D0DA; border-radius: 10px;
+    padding: clamp(8px, .8vw, 14px) clamp(12px, 1.2vw, 22px);
+    font-size: clamp(13px, 1.2vw, 20px); font-weight: 500; white-space: nowrap;
+  }
+  .rule {
+    height: 3px; margin: clamp(10px, 1.1vw, 18px) 0 clamp(16px, 2vw, 34px);
+    background: linear-gradient(90deg, var(--cyan), rgba(0,240,255,.25) 28%, rgba(0,240,255,0) 72%);
+  }
+
+  /* ───────── BOARD ───────── */
+  #board { position: relative; transition: height var(--lerp) ease; }
+  #empty { color: var(--muted); padding: 40px 4px; letter-spacing: .1em; }
+
+  .row {
+    position: absolute; inset-inline: 0; height: var(--row-h);
+    display: flex; align-items: center; gap: clamp(10px, 1.4vw, 26px);
+    padding: 0 clamp(14px, 1.6vw, 28px);
+    background: linear-gradient(180deg, var(--card), var(--card-2));
+    border: 1px solid var(--border); border-radius: 14px;
+    transition: transform var(--lerp) cubic-bezier(.4,0,.2,1), height var(--lerp) ease,
+                border-color var(--lerp), box-shadow var(--lerp), background var(--lerp);
+    will-change: transform;
+  }
+
+  /* 名次欄 */
+  .rankcol { flex: none; width: clamp(56px, 5.4vw, 96px); text-align: center; }
+  .rankcol .n {
+    font-weight: 700; font-size: clamp(24px, 2.9vw, 46px); line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .shield { flex: none; width: clamp(56px, 5.6vw, 96px); height: clamp(58px, 5.9vw, 100px); display: none; }
+  .row.lead .shield { display: block; }
+  .row.lead .rankcol { display: none; }
+
+  /* 大頭照 */
+  .avatar {
+    flex: none; width: clamp(54px, 5.5vw, 92px); height: clamp(54px, 5.5vw, 92px);
+    border-radius: 10px; border: 2px solid #3A4553; overflow: hidden;
+    background: linear-gradient(160deg, #26313D, #141B23);
+    display: grid; place-items: center;
+    font-weight: 700; font-size: clamp(16px, 1.5vw, 26px); color: #90A0B2;
+  }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
+  .row.lead .avatar { border-color: var(--gold); }
+
+  /* 進度欄 */
+  .prog { flex: 1; min-width: 150px; display: flex; flex-direction: column; gap: clamp(5px, .5vw, 9px); }
+  .flag {
+    width: clamp(26px, 2.2vw, 38px); height: clamp(18px, 1.5vw, 26px); border-radius: 4px;
+    display: grid; place-items: center; overflow: hidden; background: #1E2731;
+    font-size: clamp(15px, 1.4vw, 24px); line-height: 1;
+  }
+  .prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+  .prog-head .left { display: flex; align-items: baseline; gap: 8px; }
+  .ptitle { font-size: clamp(11px, 1.05vw, 18px); font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: #D6DDE5; white-space: nowrap; }
+  .pct { color: var(--gold); font-size: clamp(11px, 1.05vw, 18px); font-weight: 500; display: none; }
+  .row.lead .pct { display: inline; }
+  .meters { font-size: clamp(12px, 1.1vw, 19px); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .meters span { color: var(--muted); font-weight: 500; }
+  .track { height: clamp(9px, .95vw, 16px); background: var(--track); border-radius: 99px; overflow: hidden; }
+  .fill {
+    height: 100%; width: 100%; border-radius: 99px; transform-origin: left center; transform: scaleX(0);
+    background: linear-gradient(90deg, #00C8D6, var(--cyan));
+    box-shadow: 0 0 14px rgba(0,240,255,.45);
+    /* linear：等速前進才像真的在跑 */
+    transition: transform var(--lerp) linear, background var(--lerp), box-shadow var(--lerp);
+  }
+  .row.lead .fill { background: linear-gradient(90deg, #E62B55, #FF5C7A); box-shadow: 0 0 16px rgba(255,51,102,.55); }
+
+  .vline { flex: none; width: 1px; align-self: stretch; margin: clamp(14px, 1.4vw, 26px) 0; background: var(--line); }
+
+  /* 配速欄 */
+  .pacecol { flex: none; width: clamp(108px, 12vw, 220px); }
+  .pacecol .v { display: flex; align-items: baseline; gap: 6px; }
+  .pacecol b {
+    font-weight: 700; font-size: clamp(26px, 3.7vw, 60px); line-height: 1.05;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+  }
+  .pacecol i { font-style: normal; color: var(--muted); font-size: clamp(11px, 1.15vw, 20px); }
+  .row.done .pacecol b { font-size: clamp(22px, 2.9vw, 48px); }
+
+  /* 分段欄（非冠軍） */
+  .splitcol { flex: none; width: clamp(104px, 10vw, 180px); display: block; }
+  .splitcol .grow { display: flex; justify-content: space-between; gap: 10px; margin-top: 5px; }
+  .splitcol .g { font-size: clamp(11px, 1.05vw, 18px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .row.lead .splitcol, .row.lead .splitcol + .vline { display: none; }
+
+  /* 速度儀表（僅冠軍） */
+  .gauge { flex: none; width: clamp(76px, 6.9vw, 120px); height: clamp(76px, 6.9vw, 120px); position: relative; display: none; }
+  .row.lead .gauge { display: block; }
+  .gauge svg { width: 100%; height: 100%; transform: rotate(135deg); }
+  .gauge .arc { transition: stroke-dasharray var(--lerp) linear; }
+  .gauge .rd { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+  .gauge .rd b { font-weight: 700; font-size: clamp(16px, 1.6vw, 28px); line-height: 1; font-variant-numeric: tabular-nums; }
+  .gauge .rd span { color: var(--muted); font-size: clamp(9px, .8vw, 14px); }
+
+  /* 冠軍框：金 → 珊瑚紅漸層邊 + 外暈 */
+  .row.lead {
+    height: var(--lead-h); background: var(--lead-card);
+    border-color: transparent; border-radius: 16px;
+    background-image: linear-gradient(var(--lead-card), var(--lead-card)),
+                      linear-gradient(100deg, var(--gold) 0%, #FFA53A 38%, var(--coral) 72%, #FF4D6D 100%);
+    background-origin: border-box; background-clip: padding-box, border-box;
+    border-width: 2px;
+    box-shadow: 0 0 22px rgba(255,215,0,.22), 0 0 34px rgba(255,51,102,.22);
+  }
+  .row.done .fill { background: linear-gradient(90deg, #5A6672, #8B97A5); box-shadow: none; }
+  .row.lead.done .fill { background: linear-gradient(90deg, var(--gold-deep), var(--gold)); box-shadow: 0 0 14px rgba(255,215,0,.5); }
+  .row.wait { opacity: .62; }
+
+  #flash {
+    position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 99;
+    font-weight: 700; font-style: italic; font-size: min(24vw, 320px); color: var(--gold);
+    text-shadow: 0 0 80px rgba(255,215,0,.6); opacity: 0; transition: opacity .5s;
+  }
+  #flash.show { opacity: 1; transition: none; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="goldGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FCE38A"/><stop offset=".45" stop-color="#E3B23C"/><stop offset="1" stop-color="#B8860B"/>
+  </linearGradient>
+</defs></svg>
+
+<header>
+  <div class="brand">FitRace</div>
+  <div class="event" id="eventTitle">World Championship — 5KM Treadmill Challenge</div>
+  <div class="spacer"></div>
+  <div class="timer">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#00F0FF" stroke-width="1.8" stroke-linecap="round">
+      <circle cx="12" cy="13.5" r="7.5"/><path d="M9.5 2.5h5M12 9.5v4"/>
+    </svg>
+    <div class="clock" id="clock">--:--</div>
+  </div>
+  <div class="heat" id="roomLabel">—</div>
+</header>
+<div class="rule"></div>
+
+<div id="board"><div id="empty">等待選手加入…</div></div>
+<div id="flash"></div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const room = params.get("room") || "ROOM_101";
+document.getElementById("roomLabel").textContent = room.replace(/_/g, " ");
+
+const board = document.getElementById("board");
+const clockEl = document.getElementById("clock");
+const flashEl = document.getElementById("flash");
+const css = (n) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(n));
+const ROW_H = css("--row-h"), LEAD_H = css("--lead-h"), GAP = css("--gap");
+const GAUGE_MAX_KMH = 25; // 儀表滿刻度
+const ARC = 2 * Math.PI * 45 * 0.75; // 270° 弧長（r=45）
+
+let offsetMs = 0, bestRtt = Infinity;
+let startAt = null, raceDistance = 5000;
+let closedAt = null;
+const rows = new Map();
+const serverNow = () => Date.now() + offsetMs;
+
+// ponytail: 看板自己領唯讀 Token；正式營運要改成由場館後台預先配發
+async function displayToken() {
+  const res = await fetch(`/rooms/${encodeURIComponent(room)}/tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ runnerId: "BIGSCREEN", name: "Display", role: "DISPLAY" }),
+  });
+  if (!res.ok) throw new Error(`token ${res.status}`);
+  return (await res.json()).token;
+}
+
+let backoff = 500;
+async function connect() {
+  let ws;
+  try {
+    const token = await displayToken();
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
+  } catch {
+    return retry();
+  }
+  ws.onopen = () => { backoff = 500; syncClock(ws); };
+  ws.onclose = () => retry();
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+}
+
+// §5.2 指數退避重連
+function retry() {
+  setTimeout(connect, backoff);
+  backoff = Math.min(backoff * 2, 10000);
+}
+
+// §3.1 校時：與選手端同一套公式，取 RTT 最小的樣本
+function syncClock(ws) {
+  bestRtt = Infinity;
+  for (let i = 0; i < 5; i++) {
+    setTimeout(() => ws.send(JSON.stringify({ type: "PING", clientSendTime: Date.now() })), i * 120);
+  }
+}
+
+function handle(msg) {
+  if (msg.type === "PONG") {
+    const rtt = Date.now() - msg.clientSendTime;
+    if (rtt < bestRtt) {
+      bestRtt = rtt;
+      offsetMs = msg.serverTime - (msg.clientSendTime + rtt / 2);
+    }
+  } else if (msg.type === "RACE_SCHEDULED") {
+    startAt = msg.startAtServerTime;
+    raceDistance = msg.raceDistanceMeters;
+    closedAt = null;
+    document.getElementById("eventTitle").textContent = `World Championship — ${distLabel()} Treadmill Challenge`;
+    for (const row of rows.values()) row.ptitle.textContent = `${distLabel()} Track Progress`;
+    // 重連或中途加入時已經開賽了，別補放一次倒數與 GO
+    lastCount = Date.now() + offsetMs >= startAt ? 0 : null;
+  } else if (msg.type === "RACE_CLOSED") {
+    closedAt = msg.closedAtServerTime;
+  } else if (msg.type === "LEADERBOARD_UPDATE") {
+    render(msg.rankings);
+  }
+}
+
+function render(rankings) {
+  if (rankings.length) document.getElementById("empty")?.remove();
+  // Use closedAt if set by RACE_CLOSED; otherwise compute from rankings
+  if (closedAt !== null) {
+    raceOverAt = closedAt;
+  } else {
+    // 全員完賽就停錶在最後一位的撞線時間；只要還有人在跑就繼續走
+    raceOverAt = rankings.length && rankings.every((r) => r.status === "FINISHED")
+      ? Math.max(...rankings.map((r) => r.finishTimeMs))
+      : null;
+  }
+
+  let y = 0;
+  for (const [i, r] of rankings.entries()) {
+    let row = rows.get(r.runnerId);
+    if (!row) {
+      row = makeRow();
+      rows.set(r.runnerId, row);
+      board.append(row.el);
+      row.avatar.innerHTML = r.avatarUrl
+        ? `<img alt="" src="${encodeURI(r.avatarUrl)}">`
+        : initials(r.name);
+      row.flag.textContent = flagEmoji(r.country);
+      row.flag.style.visibility = r.country ? "visible" : "hidden";
+    }
+    const lead = r.rank === 1 && r.status !== "WAITING";
+    row.el.style.transform = `translateY(${y}px)`;
+    y += (lead ? LEAD_H : ROW_H) + GAP;
+
+    row.num.textContent = r.rank;
+    row.shieldNum.textContent = String(r.rank).padStart(2, "0");
+
+    const pct = Math.max(0, Math.min(1, r.progressPercent));
+    row.fill.style.transform = `scaleX(${pct})`;
+    row.pct.textContent = `(${Math.round(pct * 100)}%)`;
+    row.meters.innerHTML =
+      `${Math.round(Math.min(r.distance, raceDistance)).toLocaleString()}m <span>/ ${raceDistance.toLocaleString()}m</span>`;
+
+    const done = r.status === "FINISHED";
+    const dnf = r.status === "DNF";
+    row.pace.textContent = dnf ? "DNF" : done ? fmtClock(r.finishTimeMs - startAt, true) : fmtPace(r.pace);
+    row.paceUnit.textContent = dnf ? "" : done ? "total" : "/km";
+    row.gapLead.textContent = fmtGap(r.gapToLeaderMs);
+    row.gapAhead.textContent = fmtGap(r.gapToAheadMs);
+
+    const speed = Math.max(0, Math.min(GAUGE_MAX_KMH, r.speedKmh));
+    row.arc.setAttribute("stroke-dasharray", `${(ARC * speed) / GAUGE_MAX_KMH} 999`);
+    row.speed.textContent = r.speedKmh.toFixed(1);
+
+    row.el.className = "row" + (lead ? " lead" : "") + (done || dnf ? " done" : "")
+      + (r.status === "WAITING" ? " wait" : "");
+  }
+
+  // 榜單沒帶到的選手就移除。掉線選手伺服器仍會回報（凍結在榜上），
+  // 因此這條實際只在伺服器重啟、房間狀態歸零時清畫面。
+  const present = new Set(rankings.map((r) => r.runnerId));
+  for (const [id, row] of rows) {
+    if (!present.has(id)) { row.el.remove(); rows.delete(id); }
+  }
+  board.style.height = `${Math.max(0, y - GAP)}px`;
+}
+
+function makeRow() {
+  const el = document.createElement("div");
+  el.className = "row";
+  el.innerHTML = `
+    <svg class="shield" viewBox="0 0 72 78">
+      <path d="M8 4h56a5 5 0 0 1 5 5v40a7 7 0 0 1-3.6 6.1L39.4 71.2a7 7 0 0 1-6.8 0L6.6 55.1A7 7 0 0 1 3 49V9a5 5 0 0 1 5-5z"
+            fill="url(#goldGrad)" stroke="#8A6508" stroke-width="2.5"/>
+      <path d="M12 11h48v34.5a3 3 0 0 1-1.5 2.6L37.5 60.4a3 3 0 0 1-3 0L13.5 48.1A3 3 0 0 1 12 45.5z"
+            fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+      <text class="shieldNum" x="36" y="40" text-anchor="middle" dominant-baseline="middle"
+            fill="#FFF8E1" font-family="Space Grotesk, sans-serif" font-size="26" font-weight="700">01</text>
+    </svg>
+    <div class="rankcol"><div class="lbl">Rank</div><div class="n"></div></div>
+    <div class="avatar"></div>
+    <div class="prog">
+      <div class="flag"></div>
+      <div class="prog-head">
+        <div class="left"><span class="ptitle">${distLabel()} Track Progress</span><span class="pct"></span></div>
+        <div class="meters"></div>
+      </div>
+      <div class="track"><div class="fill"></div></div>
+    </div>
+    <div class="vline"></div>
+    <div class="pacecol">
+      <div class="lbl">Pace</div>
+      <div class="v"><b class="pace"></b><i class="paceUnit">/km</i></div>
+    </div>
+    <div class="vline"></div>
+    <div class="splitcol">
+      <div class="lbl">Split</div>
+      <div class="grow"><span class="lbl">Gap</span><span class="g gapLead"></span></div>
+      <div class="grow"><span class="lbl">Gap</span><span class="g gapAhead"></span></div>
+    </div>
+    <div class="gauge">
+      <svg viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="45" fill="none" stroke="#232C36" stroke-width="7"
+                stroke-linecap="round" stroke-dasharray="${ARC} 999"/>
+        <circle class="arc" cx="50" cy="50" r="45" fill="none" stroke="#00F0FF" stroke-width="7"
+                stroke-linecap="round" stroke-dasharray="0 999"/>
+      </svg>
+      <div class="rd"><b class="speed">0.0</b><span>km/h</span></div>
+    </div>`;
+  const q = (s) => el.querySelector(s);
+  return {
+    el, ptitle: q(".ptitle"), num: q(".rankcol .n"), shieldNum: q(".shieldNum"), avatar: q(".avatar"), flag: q(".flag"),
+    pct: q(".pct"), meters: q(".meters"), fill: q(".fill"), pace: q(".pace"), paceUnit: q(".paceUnit"),
+    gapLead: q(".gapLead"), gapAhead: q(".gapAhead"), arc: q(".arc"), speed: q(".speed"),
+  };
+}
+
+// 5000 → "5KM"，400 → "400M"
+const distLabel = () =>
+  raceDistance >= 1000 && raceDistance % 1000 === 0 ? `${raceDistance / 1000}KM` : `${raceDistance}M`;
+
+const initials = (n) => n.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+
+// 國碼轉區域指示符號 emoji。Windows 的字型不含國旗字符，屆時會退化成兩個字母。
+function flagEmoji(cc) {
+  if (!cc || cc.length < 2) return "";
+  return String.fromCodePoint(...[...cc.slice(0, 2).toUpperCase()].map((c) => 0x1f1a5 + c.charCodeAt(0)));
+}
+
+// 協議是 04'03"，畫面用 03:18 這種寫法
+const fmtPace = (p) => p.replace("'", ":").replace('"', "");
+
+function fmtClock(ms, tenths = false) {
+  const t = Math.max(0, ms);
+  const m = Math.floor(t / 60000);
+  const s = Math.floor((t % 60000) / 1000);
+  const base = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return tenths ? `${base}.${Math.floor((t % 1000) / 100)}` : base;
+}
+
+function fmtGap(ms) {
+  if (ms == null) return "—";
+  const sign = ms < 0 ? "-" : "+";
+  const t = Math.abs(ms);
+  return `${sign}${Math.floor(t / 60000)}:${Math.floor((t % 60000) / 1000)}.${String(t % 1000).padStart(3, "0")}`;
+}
+
+// 唯一需要 rAF 的東西是這個碼表；進度條與名次交換都交給 CSS transition
+let lastCount = null;
+let raceOverAt = null;
+function tick() {
+  if (startAt === null) {
+    clockEl.textContent = "--:--";
+  } else if (raceOverAt !== null) {
+    clockEl.classList.add("count");
+    clockEl.textContent = fmtClock(raceOverAt - startAt, true);
+  } else {
+    const remain = startAt - serverNow();
+    if (remain > 0) {
+      const n = Math.ceil(remain / 1000);
+      clockEl.textContent = `T-${n}`;
+      clockEl.classList.add("count");
+      if (n !== lastCount) { lastCount = n; if (n <= 3) flash(String(n)); }
+    } else {
+      clockEl.classList.remove("count");
+      clockEl.textContent = fmtClock(-remain, true);
+      if (lastCount !== 0) { lastCount = 0; flash("GO"); }
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+function flash(text) {
+  flashEl.textContent = text;
+  flashEl.classList.add("show");
+  requestAnimationFrame(() => flashEl.classList.remove("show"));
+}
+
+// §5.2 螢幕常亮。可見性恢復後要重新取得，否則切走一次就永久失效
+async function keepAwake() {
+  try { await navigator.wakeLock.request("screen"); } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAwake(); });
+document.addEventListener("click", keepAwake, { once: true });
+
+keepAwake();
+connect();
+tick();
+</script>
+</body>
+</html>

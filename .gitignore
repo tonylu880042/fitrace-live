@@ -1,0 +1,13 @@
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+
+# Rust（本機建置目錄在 ~/.cargo/shared-target，這裡保險起見一併忽略）
+server/target/
+
+# OS
+.DS_Store
