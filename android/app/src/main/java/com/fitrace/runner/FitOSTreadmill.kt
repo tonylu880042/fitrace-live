@@ -47,9 +47,11 @@ class FitOSTreadmill(
         service = null
         main.post {
             onConnectedChanged(false)
-            context.unbindService(connection)
-            bound = false
-            main.postDelayed({ connect() }, REBIND_DELAY_MS)
+            if (bound) {
+                runCatching { context.unbindService(connection) }
+                bound = false
+                main.postDelayed({ connect() }, REBIND_DELAY_MS)
+            }
         }
     }
 
@@ -76,9 +78,11 @@ class FitOSTreadmill(
     }
 
     override fun disconnect() {
+        main.removeCallbacksAndMessages(null)
         if (!bound) return
+        runCatching { service?.asBinder()?.unlinkToDeath(deathRecipient, 0) }
         runCatching { service?.unregisterCallback(callback) }
-        context.unbindService(connection)
+        runCatching { context.unbindService(connection) }
         bound = false
         service = null
         onConnectedChanged(false)

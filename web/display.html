@@ -307,9 +307,14 @@ function render(rankings) {
       row = makeRow();
       rows.set(r.runnerId, row);
       board.append(row.el);
-      row.avatar.innerHTML = r.avatarUrl
-        ? `<img alt="" src="${encodeURI(r.avatarUrl)}">`
-        : initials(r.name);
+      if (r.avatarUrl) {
+        const img = document.createElement("img");
+        img.alt = "";
+        img.src = r.avatarUrl;
+        row.avatar.replaceChildren(img);
+      } else {
+        row.avatar.textContent = initials(r.name);
+      }
       row.flag.textContent = flagEmoji(r.country);
       row.flag.style.visibility = r.country ? "visible" : "hidden";
     }

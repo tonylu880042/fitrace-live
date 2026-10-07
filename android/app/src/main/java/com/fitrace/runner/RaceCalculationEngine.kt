@@ -77,7 +77,7 @@ class RaceCalculationEngine {
 
         val finish = prevSample?.let { (t1, d1) ->
             interpolateFinish(t1, d1, serverTimeMs, distance, raceDistanceM)
-        }
+        } ?: if (distance >= raceDistanceM) serverTimeMs else null
         prevSample = serverTimeMs to distance
 
         if (finish != null) {

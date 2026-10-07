@@ -65,6 +65,16 @@ class RaceCalculationEngineTest {
     }
 
     @Test
+    fun `sample landing at or past target without prior sample completes the race`() {
+        val engine = RaceCalculationEngine()
+        engine.arm(0.0, raceDistanceM = 100.0)
+        val sample = engine.update(105.0, 15f, 180, 2_000)
+        assertEquals(2_000L, sample.finishTimeMs)
+        assertEquals(100.0, sample.raceDistanceM, 1e-9)
+        assertEquals(true, sample.justFinished)
+    }
+
+    @Test
     fun `odometer reset does not wipe out the race distance`() {
         val engine = RaceCalculationEngine()
         engine.arm(500.0)

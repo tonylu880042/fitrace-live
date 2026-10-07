@@ -167,6 +167,8 @@ async fn delete_runner(
     }
 
     room.runners.remove(&runner_id);
+    drop(rooms);
+    st.tokens.lock().unwrap().retain(|_, info| !(info.room_id == room_id && info.runner_id == runner_id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -228,21 +230,20 @@ async fn issue_token(
             ));
         }
 
-        let rooms = st.rooms.lock().unwrap();
+        let mut rooms = st.rooms.lock().unwrap();
         let room = rooms.get(&room_id).ok_or_else(|| (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "ROOM_NOT_FOUND" })),
         ))?;
 
-        // 檢查此選手是否已在此房間
-        if let Some(existing) = room.runners.get(&runner_id) {
+        let is_existing = if let Some(existing) = room.runners.get(&runner_id) {
             if existing.device_id != device_id {
                 return Err((
                     StatusCode::CONFLICT,
                     Json(json!({ "error": "RUNNER_ID_IN_USE" })),
                 ));
             }
-            // 同設備重新入場：OK，在下面發 Token
+            true
         } else {
             // 新報名：檢查房間狀態
             let status = room_status(room.closed_at_ms, room.start_at_ms, now);
@@ -262,7 +263,10 @@ async fn issue_token(
                     ));
                 }
             }
+            false
+        };
 
+        if !is_existing {
             // 檢查選手是否在其他非完賽房間
             let in_other_room = rooms.iter().any(|(other_id, other_room)| {
                 other_id != &room_id
@@ -279,25 +283,25 @@ async fn issue_token(
                 ));
             }
 
-            // 新增選手到房間
-            drop(rooms);
-            let mut rooms = st.rooms.lock().unwrap();
-            rooms.get_mut(&room_id).unwrap().runners.insert(
-                runner_id.clone(),
-                RunnerState {
-                    runner_id: runner_id.clone(),
-                    name: name.clone(),
-                    country: req.country.clone(),
-                    bib: req.bib.clone(),
-                    avatar_url: req.avatar_url.clone(),
-                    device_id: device_id.to_string(),
-                    distance: 0.0,
-                    pace: "--'--\"".to_string(),
-                    speed_kmh: 0.0,
-                    cadence: 0,
-                    finish_time_ms: None,
-                },
-            );
+            // 新增選手到房間（原子操作，不 drop 鎖）
+            if let Some(r) = rooms.get_mut(&room_id) {
+                r.runners.insert(
+                    runner_id.clone(),
+                    RunnerState {
+                        runner_id: runner_id.clone(),
+                        name: name.clone(),
+                        country: req.country.clone(),
+                        bib: req.bib.clone(),
+                        avatar_url: req.avatar_url.clone(),
+                        device_id: device_id.to_string(),
+                        distance: 0.0,
+                        pace: "--'--\"".to_string(),
+                        speed_kmh: 0.0,
+                        cadence: 0,
+                        finish_time_ms: None,
+                    },
+                );
+            }
         }
     } else {
         // DISPLAY token：房間必須存在
@@ -555,6 +559,8 @@ async fn admin_delete_room(
     }
 
     rooms.remove(&room_id);
+    drop(rooms);
+    st.tokens.lock().unwrap().retain(|_, info| info.room_id != room_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -908,8 +914,9 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
         // 移除10分鐘前已關閉的房間
         if let Some(closed_at) = room.closed_at_ms {
             if now >= closed_at + 10 * 60 * 1000 {
+                rooms.remove(&room_id);
                 drop(rooms);
-                st.rooms.lock().unwrap().remove(&room_id);
+                st.tokens.lock().unwrap().retain(|_, info| info.room_id != room_id);
                 return;
             }
         }

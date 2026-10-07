@@ -26,6 +26,7 @@ class RaceClient(
     private val country: String?,
     private val deviceId: String,
     private val listener: Listener,
+    private val http: OkHttpClient = OkHttpClient(),
 ) {
     interface Listener {
         fun onConnectionChanged(connected: Boolean)
@@ -50,7 +51,6 @@ class RaceClient(
         val gapToAheadMs: Long? = null,
     )
 
-    private val http = OkHttpClient()
     private val main = Handler(Looper.getMainLooper())
     private var ws: WebSocket? = null
     // 由主執行緒寫、OkHttp 執行緒讀；關閉後一律不再回呼，避免舊房間的訊息汙染新的一場

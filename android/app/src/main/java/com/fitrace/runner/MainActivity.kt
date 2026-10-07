@@ -91,7 +91,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -268,7 +270,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     private val lobbyPoll = object : Runnable {
         override fun run() {
             val host = _state.value.profile.host
-            Thread {
+            viewModelScope.launch(Dispatchers.IO) {
                 val result = runCatching { fetchRooms(http, host) }
                 val receivedAt = System.currentTimeMillis()
                 main.post {
@@ -283,7 +285,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
                         onFailure = { _state.value.copy(lobbyOnline = false) },
                     )
                 }
-            }.start()
+            }
             main.postDelayed(this, LOBBY_REFRESH_MS)
         }
     }
@@ -292,25 +294,28 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     fun join(roomId: String) {
         main.removeCallbacks(lobbyPoll)
+        main.removeCallbacks(uploadTick)
         val p = _state.value.profile
         engine.reset()
         sequence = 0
         client?.close()
-        client = RaceClient(p.host, roomId, p.runnerId, p.name, p.country.ifBlank { null }, deviceId, this)
+        client = RaceClient(p.host, roomId, p.runnerId, p.name, p.country.ifBlank { null }, deviceId, this, http)
             .also { it.connect() }
         _state.value = clearedRace(_state.value, Screen.RACE, roomId = roomId)
         main.post(uploadTick)
     }
 
     fun leaveToLobby(notice: String? = null) {
-        // 若尚未發令，先在背景執行緒取消報名
+        // 若尚未發令，先在背景取消報名
         val s = _state.value
         if (s.startAtServerTime == null && s.roomId.isNotEmpty()) {
-            // 先取出值再進背景執行緒：下面 clearedRace() 會立刻把 roomId 清空
+            // 先取出值再進協程：下面 clearedRace() 會立刻把 roomId 清空
             val host = s.profile.host
             val roomId = s.roomId
             val runnerId = s.profile.runnerId
-            Thread { cancelRegistration(http, host, roomId, runnerId, deviceId) }.start()
+            viewModelScope.launch(Dispatchers.IO) {
+                cancelRegistration(http, host, roomId, runnerId, deviceId)
+            }
         }
         client?.close()
         client = null
