@@ -678,7 +678,7 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
         TunnelBackdrop(s.speedKmh)
 
         Column(Modifier.fillMaxSize().padding(start = (36 * k).dp, end = (36 * k).dp, bottom = (26 * k).dp)) {
-            TopBar(s, now, startAt, phase, k, onLeave = { vm.leaveToLobby() }, onToggleViewMode = { vm.toggleViewMode() })
+            TopBar(s, now, startAt, phase, k, onLeave = { vm.leaveToLobby() })
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 androidx.compose.animation.AnimatedVisibility(
                     visible = s.viewMode == RaceViewMode.COCKPIT,
@@ -692,8 +692,10 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
                         Spacer(Modifier.weight(1f))
                         Column {
                             LeaderboardCard(s, k, onExpand = { vm.setViewMode(RaceViewMode.LEADERBOARD) })
-                            Spacer(Modifier.height((16 * k).dp))
+                            Spacer(Modifier.height((14 * k).dp))
                             SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+                            Spacer(Modifier.height((14 * k).dp))
+                            ViewModeToggle(s.viewMode, k, onToggle = { vm.toggleViewMode() })
                         }
                     }
                 }
@@ -1085,45 +1087,55 @@ private class CountdownAudio(context: Context) {
     }
 }
 
-/* ── 頂列與視角切換 ── */
+/* ── 視角切換膠囊（儀表板右下角 / 排行榜頂列） ── */
 
 @Composable
 private fun ViewModeToggle(
     current: RaceViewMode,
     k: Float,
+    modifier: Modifier = Modifier.width((340 * k).dp),
     onToggle: () -> Unit,
 ) {
     Row(
-        Modifier.height((34 * k).dp)
-            .glass(k, Color.White.copy(alpha = .18f), Color.Black.copy(alpha = .40f), radius = 50f)
-            .padding((2.5f * k).dp),
+        modifier
+            .height((48 * k).dp)
+            .glass(k, Color.White.copy(alpha = .18f), Color.Black.copy(alpha = .45f), radius = 50f)
+            .padding((4 * k).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ModeTab(
             label = "COCKPIT",
             active = current == RaceViewMode.COCKPIT,
             k = k,
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             onClick = { if (current != RaceViewMode.COCKPIT) onToggle() },
         )
-        Spacer(Modifier.width((2 * k).dp))
+        Spacer(Modifier.width((4 * k).dp))
         ModeTab(
             label = "LEADERBOARD",
             active = current == RaceViewMode.LEADERBOARD,
             k = k,
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             onClick = { if (current != RaceViewMode.LEADERBOARD) onToggle() },
         )
     }
 }
 
 @Composable
-private fun ModeTab(label: String, active: Boolean, k: Float, onClick: () -> Unit) {
+private fun ModeTab(
+    label: String,
+    active: Boolean,
+    k: Float,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val bg = if (active) Cyan else Color.Transparent
     val textC = if (active) Carbon else Label
     Box(
-        Modifier.clip(RoundedCornerShape(50))
+        modifier
+            .clip(RoundedCornerShape(50))
             .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -1131,17 +1143,18 @@ private fun ModeTab(label: String, active: Boolean, k: Float, onClick: () -> Uni
             color = textC,
             fontFamily = Grotesk,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-            fontSize = (11 * k).sp,
-            letterSpacing = (1.0 * k).sp,
+            fontSize = (13 * k).sp,
+            letterSpacing = (1.2 * k).sp,
         )
     }
 }
+
+/* ── 頂列（乾淨無多餘切換鈕） ── */
 
 @Composable
 private fun TopBar(
     s: RaceUiState, now: Long, startAt: Long?, phase: CountdownPhase, k: Float,
     onLeave: () -> Unit,
-    onToggleViewMode: () -> Unit = {},
 ) = Box(Modifier.fillMaxWidth().height((84 * k).dp)) {
     Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
         FitRaceLogo(k)
@@ -1157,9 +1170,9 @@ private fun TopBar(
 
     // 中央梯形頁籤：狀態 + 比賽計時
     Row(
-        Modifier.align(Alignment.TopCenter).height((70 * k).dp)
+        Modifier.align(Alignment.TopCenter).height((72 * k).dp)
             .drawBehind {
-                val slant = 24f * k
+                val slant = 36f * k
                 val tab = Path().apply {
                     moveTo(0f, 0f); lineTo(size.width, 0f)
                     lineTo(size.width - slant, size.height); lineTo(slant, size.height); close()
@@ -1167,7 +1180,7 @@ private fun TopBar(
                 drawPath(tab, Brush.verticalGradient(listOf(Color.White.copy(alpha = .03f), Color.White.copy(alpha = .08f))))
                 drawPath(tab, Color.White.copy(alpha = .14f), style = Stroke(1.2f * k))
             }
-            .padding(horizontal = (18 * k).dp),
+            .padding(horizontal = (48 * k).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val counting = phase is CountdownPhase.Counting
@@ -1178,9 +1191,9 @@ private fun TopBar(
                 counting -> "GET SET"
                 s.finishTimeMs != null -> "FINISHED"
                 else -> "RUNNING RACE"
-            }, Label, k, 17f,
+            }, Label, k, 18f,
         )
-        Spacer(Modifier.width((12 * k).dp))
+        Spacer(Modifier.width((14 * k).dp))
         Glow(
             when {
                 s.dnf -> "%,dm".format(s.distance.roundToInt())
@@ -1190,25 +1203,23 @@ private fun TopBar(
                 else -> fmtClock(now - startAt)
             },
             if (s.dnf) Coral else if (counting || s.finishTimeMs != null) Gold else Color.White,
-            k, 32f, glow = counting || s.finishTimeMs != null,
+            k, 34f, glow = counting || s.finishTimeMs != null,
         )
     }
 
     Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-        ViewModeToggle(s.viewMode, k, onToggleViewMode)
-        Spacer(Modifier.width((16 * k).dp))
         // 截止倒數只在比賽中出現，此時不顯示離開鈕，右側有空間
         if (startAt != null && s.finishTimeMs == null && !s.closed && s.cutoffAtServerTime != null) {
             SoftLabel("CUTOFF ${fmtClock(max(0L, s.cutoffAtServerTime - now)).substringBefore('.')}", Label, k, 15f)
-            Spacer(Modifier.width((16 * k).dp))
+            Spacer(Modifier.width((20 * k).dp))
         }
         StatusDot("BELT", s.treadmillConnected, k)
-        Spacer(Modifier.width((12 * k).dp))
+        Spacer(Modifier.width((14 * k).dp))
         StatusDot(if (s.serverConnected) "${s.rttMs}ms" else "OFFLINE", s.serverConnected, k)
-        Spacer(Modifier.width((18 * k).dp))
-        SoftLabel("INCLINE", Label, k, 17f)
-        Spacer(Modifier.width((6 * k).dp))
-        Glow("%.1f%%".format(s.incline), Color.White, k, 24f, glow = false)
+        Spacer(Modifier.width((24 * k).dp))
+        SoftLabel("INCLINE", Label, k, 18f)
+        Spacer(Modifier.width((8 * k).dp))
+        Glow("%.1f%%".format(s.incline), Color.White, k, 26f, glow = false)
         if (s.canLeave) {
             Spacer(Modifier.width((20 * k).dp))
             Box(
@@ -1537,24 +1548,6 @@ private fun LeaderboardView(
                             letterSpacing = (1 * k).sp,
                         )
                     }
-                    Spacer(Modifier.width((12 * k).dp))
-                    Row(
-                        Modifier.clip(RoundedCornerShape(50))
-                            .background(Cyan.copy(alpha = .12f))
-                            .border((1 * k).dp, Cyan.copy(alpha = .45f), RoundedCornerShape(50))
-                            .clickable { vm.setViewMode(RaceViewMode.COCKPIT) }
-                            .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "‹ COCKPIT HUD",
-                            color = Cyan,
-                            fontFamily = Grotesk,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = (11 * k).sp,
-                            letterSpacing = (1 * k).sp,
-                        )
-                    }
                 }
                 Spacer(Modifier.height((4 * k).dp))
                 SoftLabel(
@@ -1562,7 +1555,16 @@ private fun LeaderboardView(
                     Label, k, 13f,
                 )
             }
-            SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+                Spacer(Modifier.width((16 * k).dp))
+                ViewModeToggle(
+                    current = s.viewMode,
+                    k = k,
+                    modifier = Modifier.width((280 * k).dp),
+                    onToggle = { vm.toggleViewMode() },
+                )
+            }
         }
 
         Spacer(Modifier.height((12 * k).dp))
