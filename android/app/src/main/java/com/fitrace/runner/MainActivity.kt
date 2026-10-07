@@ -53,7 +53,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +65,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -598,9 +601,10 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
     CountdownSounds(phase, audio)
 
     BoxWithConstraints(
-        Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop() }
+        Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop(streams = false) }
     ) {
         val k = min(maxWidth.value / 1280f, maxHeight.value / 800f)
+        TunnelBackdrop(s.speedKmh)
 
         Column(Modifier.fillMaxSize().padding(start = (36 * k).dp, end = (36 * k).dp, bottom = (26 * k).dp)) {
             TopBar(s, now, startAt, phase, k) { vm.leaveToLobby() }
@@ -1411,22 +1415,123 @@ private fun DrawScope.ambient(color: Color, at: Offset, radius: Float) = drawCir
 )
 
 /** 左青右紅的環境光，取代硬邊框來分區（HUD、大廳、個人資料共用）。 */
-private fun DrawScope.ambientBackdrop() {
+private fun DrawScope.ambientBackdrop(streams: Boolean = true) {
     // 背景每次重繪都一樣，只在尺寸改變時畫一次到點陣圖，之後每幀貼一張圖（HUD 每 50ms 重繪）
-    val cached = backdropCache?.takeIf { it.first == size }?.second ?: ImageBitmap(
+    val key = size to streams
+    val cached = backdropCache?.takeIf { it.first == key }?.second ?: ImageBitmap(
         size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1),
     ).also { bmp ->
         CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(bmp), size) {
             ambient(Cyan.copy(alpha = .10f), Offset(size.width * .3f, size.height * .5f), size.width * .45f)
             ambient(Coral.copy(alpha = .08f), Offset(size.width * .95f, size.height * .95f), size.width * .35f)
-            dataStreams()
+            if (streams) dataStreams()
         }
-        backdropCache = size to bmp
+        backdropCache = key to bmp
     }
     drawImage(cached)
 }
 
-private var backdropCache: Pair<Size, ImageBitmap>? = null
+private var backdropCache: Pair<Pair<Size, Boolean>, ImageBitmap>? = null
+
+/* ── 時空隧道背景（HUD）── */
+
+/** 每 km/h 每秒往前推進的隧道深度（0..1 為整段隧道）；10 km/h ≈ 每 0.4 秒掠過一道環。 */
+private const val TUNNEL_FLOW = .018f
+private const val TUNNEL_RINGS = 14
+private const val TUNNEL_NEAR = .6f // 深度 1 = 環剛好貼齊螢幕邊；小於 1 已飛出畫面
+private const val TUNNEL_FAR = 8f
+/** 超過這個速度隧道開始升溫，到 TUNNEL_HOT_KMH 全面燒成橘紅。 */
+private const val TUNNEL_WARM_KMH = 10f
+private const val TUNNEL_HOT_KMH = 15f
+private val Ember = Color(0xFFFF4A1A) // 橘紅，介於 Amber 與 Coral 之間
+
+/** 隧道牆上的流光：(dx, dy) 為深度 1 時在牆上的位置（相對消失點、以半寬半高為單位），p0 為初始深度相位。 */
+private class TunnelStreak(val dx: Float, val dy: Float, val p0: Float, val coral: Boolean)
+
+private val TUNNEL_STREAKS: List<TunnelStreak> by lazy {
+    val rnd = java.util.Random(11)
+    List(70) {
+        val t = rnd.nextFloat() * 2f - 1f
+        val (dx, dy) = when (rnd.nextInt(4)) { 0 -> -1f to t; 1 -> 1f to t; 2 -> t to -1f; else -> t to 1f }
+        TunnelStreak(dx, dy, rnd.nextFloat(), rnd.nextFloat() < .15f)
+    }
+}
+
+/**
+ * 往前衝的數位隧道：一道道環從消失點朝選手飛來，牆上流光拉成殘影。
+ * 流速跟跑步機速度走；速度 0（含倒數階段）時隧道靜止。自己一層 Canvas 逐幀重畫，不牽動前景儀表。
+ */
+@Composable
+private fun TunnelBackdrop(speedKmh: Float) {
+    // 跑步機回報有雜訊，平滑後再推流速，避免一頓一頓
+    val speed = animateFloatAsState(speedKmh.coerceIn(0f, SPEED_MAX_KMH), tween(800), label = "tunnel")
+    var travel by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        var last = 0L
+        while (true) withFrameNanos { t ->
+            if (last != 0L) travel = (travel + speed.value * TUNNEL_FLOW * (t - last) / 1e9f) % 1000f
+            last = t
+        }
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        tunnel(travel, ((speed.value - TUNNEL_WARM_KMH) / (TUNNEL_HOT_KMH - TUNNEL_WARM_KMH)).coerceIn(0f, 1f))
+    }
+}
+
+private fun fract(x: Float) = x - kotlin.math.floor(x)
+
+/** 相位 p（0 遠 → 1 近）換成透視縮放；深度隨 p 線性前進，看起來才是等速。 */
+private fun tunnelScale(p: Float) = 1f / (TUNNEL_FAR - p * (TUNNEL_FAR - TUNNEL_NEAR))
+
+/** 遠處淡入、飛近淡出，中心留給主儀表。 */
+private fun tunnelFade(p: Float) = min(1f, p * 3f) * min(1f, (1f - p) * 5f)
+
+/**
+ * 單一線段的升溫：每條線有自己的點燃門檻 t，heat 越過門檻後短短一段內燒成橘紅。
+ * 不整體一起漸變，因為青色和橘紅互補，中間混出來是一片灰。
+ */
+private fun burn(heat: Float, t: Float) = ((heat * 1.25f - t) / .25f).coerceIn(0f, 1f)
+
+private fun hot(base: Color, hotColor: Color, b: Float, alpha: Float) =
+    lerp(base, hotColor, b).copy(alpha = min(1f, alpha * (1f + .5f * b)))
+
+/** heat 0 = 正常青色，1 = 全面燒成橘紅、也更亮。 */
+private fun DrawScope.tunnel(travel: Float, heat: Float) {
+    val c = Offset(size.width * .5f, size.height * .46f)
+    val hw = size.width * .5f
+    val hh = size.height * .54f
+    // 四個角往消失點收的縱向導軌
+    for ((sx, sy) in listOf(-1f to -1f, 1f to -1f, -1f to 1f, 1f to 1f)) {
+        drawLine(
+            Brush.linearGradient(listOf(Color.Transparent, hot(Cyan, Ember, burn(heat, .5f), .10f)), c, Offset(c.x + sx * hw, c.y + sy * hh)),
+            c, Offset(c.x + sx * hw / TUNNEL_NEAR, c.y + sy * hh / TUNNEL_NEAR), strokeWidth = size.height * .002f,
+        )
+    }
+    for (i in 0 until TUNNEL_RINGS) {
+        val p = fract(i.toFloat() / TUNNEL_RINGS + travel)
+        val sc = tunnelScale(p)
+        val a = tunnelFade(p)
+        // 每第 5 道環換珊瑚紅當節奏點；升溫時它燒成亮橘，才不會在一片橘紅裡消失
+        val b = burn(heat, fract(i * .618f))
+        val color = if (i % 5 == 0) hot(Coral, Amber, b, .22f * a) else hot(Cyan, Ember, b, .22f * a)
+        drawRoundRect(
+            color, Offset(c.x - hw * sc, c.y - hh * sc), Size(2f * hw * sc, 2f * hh * sc),
+            CornerRadius(hh * .12f * sc), style = Stroke(size.height * .004f * sc),
+        )
+    }
+    for (b in TUNNEL_STREAKS) {
+        val p = fract(b.p0 + travel * 1.6f) // 流光比環快一點，拉出層次
+        val head = tunnelScale(p)
+        val tail = tunnelScale((p - .06f).coerceAtLeast(0f))
+        val a = tunnelFade(p)
+        drawLine(
+            if (b.coral) hot(Coral, Amber, burn(heat, b.p0), .55f * a) else hot(Cyan, Ember, burn(heat, b.p0), .55f * a),
+            Offset(c.x + b.dx * hw * tail, c.y + b.dy * hh * tail),
+            Offset(c.x + b.dx * hw * head, c.y + b.dy * hh * head),
+            strokeWidth = size.height * .005f * head, cap = StrokeCap.Round,
+        )
+    }
+}
 
 /** 資料流的一段：side 0 左 / 1 右；row 為相對地平線的垂直位置 (-1..1)；u 為從螢幕外緣 (0) 往中心 (1) 的位置。 */
 private class StreamBit(val side: Int, val row: Float, val u0: Float, val u1: Float, val kind: Int)
