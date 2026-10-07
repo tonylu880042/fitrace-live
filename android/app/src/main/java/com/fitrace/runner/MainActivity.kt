@@ -40,6 +40,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -122,6 +126,7 @@ private const val SPEED_MAX_KMH = 25f
 private const val CADENCE_MAX_SPM = 200f
 
 enum class Screen { PROFILE, LOBBY, RACE }
+enum class RaceViewMode { COCKPIT, LEADERBOARD }
 
 data class Profile(
     val host: String = "10.0.2.2:8080", // 模擬器要透過 10.0.2.2 才能連到開發機的 localhost
@@ -174,6 +179,10 @@ data class RaceUiState(
     val standing: Standing? = null,
     /** 名次提示狀態機（見 RaceTension） */
     val tension: Tension = Tension(),
+    /** 視圖模式：座艙儀表或全場排行榜 */
+    val viewMode: RaceViewMode = RaceViewMode.COCKPIT,
+    /** 全場即時排行榜名單 */
+    val leaderboard: List<RaceClient.Entry> = emptyList(),
 ) {
     /** 可以離開回大廳：尚未發令，或自己已完賽，或比賽已關閉。比賽中不給一鍵離開，免得誤觸。 */
     val canLeave: Boolean get() = startAtServerTime == null || finishTimeMs != null || closed
@@ -339,6 +348,48 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     fun serverNow(): Long = client?.serverNow() ?: System.currentTimeMillis()
 
+    fun setViewMode(mode: RaceViewMode) {
+        _state.value = _state.value.copy(viewMode = mode)
+    }
+
+    fun toggleViewMode() {
+        val next = if (_state.value.viewMode == RaceViewMode.COCKPIT) RaceViewMode.LEADERBOARD else RaceViewMode.COCKPIT
+        _state.value = _state.value.copy(viewMode = next)
+    }
+
+    fun enterVerificationRace(profile: Profile? = null) {
+        val p = profile ?: _state.value.profile
+        saveProfileToPrefs(p)
+        val raceDist = 5000.0
+        val myDist = 3230.0
+        val sampleBoard = sampleLeaderboard(p.runnerId, myDist, raceDist)
+        val now = System.currentTimeMillis()
+        val startAt = now - 480_000L // 8 minutes ago
+        _state.value = RaceUiState(
+            screen = Screen.RACE,
+            profile = p,
+            roomId = "R0001",
+            serverConnected = true,
+            treadmillConnected = true,
+            startAtServerTime = startAt,
+            raceDistanceM = raceDist,
+            speedKmh = 14.8f,
+            targetSpeed = 15.0f,
+            incline = 1.0f,
+            distance = myDist,
+            pace = "04'05\"",
+            cadence = 182,
+            rank = 2,
+            fieldSize = sampleBoard.size,
+            gapToLeaderM = 420.0,
+            gapToNeighbourM = 150.0,
+            leaderDistanceM = 3650.0,
+            beltStatus = BeltStatus.RUNNING,
+            viewMode = RaceViewMode.LEADERBOARD,
+            leaderboard = sampleBoard,
+        )
+    }
+
     fun nudgeSpeed(delta: Float) {
         // UI 已停用按鈕，這裡再擋一次，避免倒數最後一瞬間的點擊漏過去
         if (!_state.value.canAdjustSpeed(serverNow())) return
@@ -459,7 +510,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         val tension = RaceTension.next(_state.value.tension, standing, _state.value.canAdjustSpeed(now), now)
         // 完賽後名次已定，差距凍結在撞線當下；否則其他人繼續跑會讓「領先幅度」一路縮到 0
         if (_state.value.finishTimeMs != null) {
-            _state.value = _state.value.copy(fieldSize = sorted.size, tension = tension)
+            _state.value = _state.value.copy(fieldSize = sorted.size, tension = tension, leaderboard = sorted)
             return
         }
         val myIndex = sorted.indexOfFirst { it.runnerId == runnerId }
@@ -471,6 +522,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         _state.value = _state.value.copy(
             rank = me?.rank,
             fieldSize = sorted.size,
+            leaderboard = sorted,
             gapToLeaderM = gapToLeader,
             gapToNeighbourM = if (me != null && neighbour != null) neighbour.distance - me.distance else null,
             leaderDistanceM = sorted.firstOrNull()?.distance,
@@ -519,6 +571,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Carbon, surface = Deep)) {
                 val vm: RaceViewModel = viewModel()
+                LaunchedEffect(Unit) {
+                    if (intent?.getBooleanExtra("verify_leaderboard", false) == true) {
+                        vm.enterVerificationRace()
+                    }
+                }
                 val state by vm.state.collectAsState()
                 when (state.screen) {
                     Screen.PROFILE -> Setup(state.profile, vm)
@@ -578,8 +635,17 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
                 )
             }
             Spacer(Modifier.height((8 * k).dp))
-            PrimaryPill("ENTER RACE LOBBY", k) {
-                vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy((12 * k).dp)) {
+                Box(Modifier.weight(1f)) {
+                    PrimaryPill("ENTER RACE LOBBY", k) {
+                        vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+                    }
+                }
+                Box(Modifier.weight(1f)) {
+                    SecondaryPill("DEMO / VERIFY HUD", k) {
+                        vm.enterVerificationRace(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+                    }
+                }
             }
         }
     }
@@ -612,16 +678,32 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
         TunnelBackdrop(s.speedKmh)
 
         Column(Modifier.fillMaxSize().padding(start = (36 * k).dp, end = (36 * k).dp, bottom = (26 * k).dp)) {
-            TopBar(s, now, startAt, phase, k) { vm.leaveToLobby() }
-            Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                PaceDial(s, k)
-                Spacer(Modifier.weight(1f))
-                SpeedRing(s, now, k)
-                Spacer(Modifier.weight(1f))
-                Column {
-                    LeaderboardCard(s, k)
-                    Spacer(Modifier.height((16 * k).dp))
-                    SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+            TopBar(s, now, startAt, phase, k, onLeave = { vm.leaveToLobby() }, onToggleViewMode = { vm.toggleViewMode() })
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = s.viewMode == RaceViewMode.COCKPIT,
+                    enter = androidx.compose.animation.fadeIn(tween(250)),
+                    exit = androidx.compose.animation.fadeOut(tween(200)),
+                ) {
+                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                        PaceDial(s, k)
+                        Spacer(Modifier.weight(1f))
+                        SpeedRing(s, now, k)
+                        Spacer(Modifier.weight(1f))
+                        Column {
+                            LeaderboardCard(s, k, onExpand = { vm.setViewMode(RaceViewMode.LEADERBOARD) })
+                            Spacer(Modifier.height((16 * k).dp))
+                            SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+                        }
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = s.viewMode == RaceViewMode.LEADERBOARD,
+                    enter = androidx.compose.animation.fadeIn(tween(250)),
+                    exit = androidx.compose.animation.fadeOut(tween(200)),
+                ) {
+                    LeaderboardView(s, vm, now, k)
                 }
             }
             CompetitionTrack(s, k)
@@ -1003,12 +1085,63 @@ private class CountdownAudio(context: Context) {
     }
 }
 
-/* ── 頂列 ── */
+/* ── 頂列與視角切換 ── */
+
+@Composable
+private fun ViewModeToggle(
+    current: RaceViewMode,
+    k: Float,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier.height((34 * k).dp)
+            .glass(k, Color.White.copy(alpha = .18f), Color.Black.copy(alpha = .40f), radius = 50f)
+            .padding((2.5f * k).dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ModeTab(
+            label = "COCKPIT",
+            active = current == RaceViewMode.COCKPIT,
+            k = k,
+            onClick = { if (current != RaceViewMode.COCKPIT) onToggle() },
+        )
+        Spacer(Modifier.width((2 * k).dp))
+        ModeTab(
+            label = "LEADERBOARD",
+            active = current == RaceViewMode.LEADERBOARD,
+            k = k,
+            onClick = { if (current != RaceViewMode.LEADERBOARD) onToggle() },
+        )
+    }
+}
+
+@Composable
+private fun ModeTab(label: String, active: Boolean, k: Float, onClick: () -> Unit) {
+    val bg = if (active) Cyan else Color.Transparent
+    val textC = if (active) Carbon else Label
+    Box(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = textC,
+            fontFamily = Grotesk,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+            fontSize = (11 * k).sp,
+            letterSpacing = (1.0 * k).sp,
+        )
+    }
+}
 
 @Composable
 private fun TopBar(
     s: RaceUiState, now: Long, startAt: Long?, phase: CountdownPhase, k: Float,
     onLeave: () -> Unit,
+    onToggleViewMode: () -> Unit = {},
 ) = Box(Modifier.fillMaxWidth().height((84 * k).dp)) {
     Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
         FitRaceLogo(k)
@@ -1024,9 +1157,9 @@ private fun TopBar(
 
     // 中央梯形頁籤：狀態 + 比賽計時
     Row(
-        Modifier.align(Alignment.TopCenter).height((72 * k).dp)
+        Modifier.align(Alignment.TopCenter).height((70 * k).dp)
             .drawBehind {
-                val slant = 40f * k
+                val slant = 24f * k
                 val tab = Path().apply {
                     moveTo(0f, 0f); lineTo(size.width, 0f)
                     lineTo(size.width - slant, size.height); lineTo(slant, size.height); close()
@@ -1034,7 +1167,7 @@ private fun TopBar(
                 drawPath(tab, Brush.verticalGradient(listOf(Color.White.copy(alpha = .03f), Color.White.copy(alpha = .08f))))
                 drawPath(tab, Color.White.copy(alpha = .14f), style = Stroke(1.2f * k))
             }
-            .padding(horizontal = (72 * k).dp),
+            .padding(horizontal = (18 * k).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val counting = phase is CountdownPhase.Counting
@@ -1045,9 +1178,9 @@ private fun TopBar(
                 counting -> "GET SET"
                 s.finishTimeMs != null -> "FINISHED"
                 else -> "RUNNING RACE"
-            }, Label, k, 18f,
+            }, Label, k, 17f,
         )
-        Spacer(Modifier.width((14 * k).dp))
+        Spacer(Modifier.width((12 * k).dp))
         Glow(
             when {
                 s.dnf -> "%,dm".format(s.distance.roundToInt())
@@ -1057,23 +1190,25 @@ private fun TopBar(
                 else -> fmtClock(now - startAt)
             },
             if (s.dnf) Coral else if (counting || s.finishTimeMs != null) Gold else Color.White,
-            k, 34f, glow = counting || s.finishTimeMs != null,
+            k, 32f, glow = counting || s.finishTimeMs != null,
         )
     }
 
     Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+        ViewModeToggle(s.viewMode, k, onToggleViewMode)
+        Spacer(Modifier.width((16 * k).dp))
         // 截止倒數只在比賽中出現，此時不顯示離開鈕，右側有空間
         if (startAt != null && s.finishTimeMs == null && !s.closed && s.cutoffAtServerTime != null) {
             SoftLabel("CUTOFF ${fmtClock(max(0L, s.cutoffAtServerTime - now)).substringBefore('.')}", Label, k, 15f)
-            Spacer(Modifier.width((20 * k).dp))
+            Spacer(Modifier.width((16 * k).dp))
         }
         StatusDot("BELT", s.treadmillConnected, k)
-        Spacer(Modifier.width((14 * k).dp))
+        Spacer(Modifier.width((12 * k).dp))
         StatusDot(if (s.serverConnected) "${s.rttMs}ms" else "OFFLINE", s.serverConnected, k)
-        Spacer(Modifier.width((26 * k).dp))
-        SoftLabel("INCLINE", Label, k, 18f)
-        Spacer(Modifier.width((8 * k).dp))
-        Glow("%.1f%%".format(s.incline), Color.White, k, 26f, glow = false)
+        Spacer(Modifier.width((18 * k).dp))
+        SoftLabel("INCLINE", Label, k, 17f)
+        Spacer(Modifier.width((6 * k).dp))
+        Glow("%.1f%%".format(s.incline), Color.White, k, 24f, glow = false)
         if (s.canLeave) {
             Spacer(Modifier.width((20 * k).dp))
             Box(
@@ -1197,13 +1332,36 @@ private fun CadenceGauge(s: RaceUiState, k: Float) =
 /* ── 右：迷你即時榜 ── */
 
 @Composable
-private fun LeaderboardCard(s: RaceUiState, k: Float) = Column(
+private fun LeaderboardCard(s: RaceUiState, k: Float, onExpand: () -> Unit = {}) = Column(
     Modifier.width((340 * k).dp).glass(k).padding((24 * k).dp),
 ) {
     val leading = s.rank == 1
     // 兩位數名次（P12 / 12）時縮字，否則右側差距欄會被擠到截斷
     val twoDigits = s.fieldSize >= 10
-    SoftLabel("LIVE LEADERBOARD", Color.White.copy(alpha = .9f), k, 17f)
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SoftLabel("LIVE LEADERBOARD", Color.White.copy(alpha = .9f), k, 17f)
+        Row(
+            Modifier.clip(RoundedCornerShape(50))
+                .background(Cyan.copy(alpha = .12f))
+                .border((1 * k).dp, Cyan.copy(alpha = .45f), RoundedCornerShape(50))
+                .clickable(onClick = onExpand)
+                .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "EXPAND ›",
+                color = Cyan,
+                fontFamily = Grotesk,
+                fontWeight = FontWeight.Bold,
+                fontSize = (12 * k).sp,
+                letterSpacing = (1 * k).sp,
+            )
+        }
+    }
     GlassDivider(k)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         // 名次接總人數（P2 / 6）：總人數 = 本場報名人數，含尚未起跑者
@@ -1336,6 +1494,448 @@ private fun CompetitionTrack(s: RaceUiState, k: Float) {
                 fontSize = (22 * k).sp, fontFeatureSettings = "tnum",
             ),
         )
+    }
+}
+
+/* ── 完整排行榜視圖 ── */
+
+@Composable
+private fun LeaderboardView(
+    s: RaceUiState,
+    vm: RaceViewModel,
+    now: Long,
+    k: Float,
+) {
+    val entries = if (s.leaderboard.isNotEmpty()) s.leaderboard else sampleLeaderboard(s.profile.runnerId, s.distance, s.raceDistanceM)
+    Column(
+        Modifier.fillMaxSize()
+            .glass(k, Color.White.copy(alpha = .12f), Color.Black.copy(alpha = .38f))
+            .padding((20 * k).dp)
+    ) {
+        // 頂部列：標題 + 選手總數 + 速度微調按鈕
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Glow("LIVE LEADERBOARD", Cyan, k, 26f, glow = false)
+                    Spacer(Modifier.width((12 * k).dp))
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(Gold.copy(alpha = .15f))
+                            .border((1 * k).dp, Gold.copy(alpha = .5f), RoundedCornerShape(50))
+                            .padding(horizontal = (10 * k).dp, vertical = (3 * k).dp)
+                    ) {
+                        Text(
+                            "${entries.size} ATHLETES",
+                            color = Gold,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (12 * k).sp,
+                            letterSpacing = (1 * k).sp,
+                        )
+                    }
+                    Spacer(Modifier.width((12 * k).dp))
+                    Row(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(Cyan.copy(alpha = .12f))
+                            .border((1 * k).dp, Cyan.copy(alpha = .45f), RoundedCornerShape(50))
+                            .clickable { vm.setViewMode(RaceViewMode.COCKPIT) }
+                            .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "‹ COCKPIT HUD",
+                            color = Cyan,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (11 * k).sp,
+                            letterSpacing = (1 * k).sp,
+                        )
+                    }
+                }
+                Spacer(Modifier.height((4 * k).dp))
+                SoftLabel(
+                    "DYNAMIC STANDINGS · TAP ROW OR TOGGLE VIEW TO RETURN",
+                    Label, k, 13f,
+                )
+            }
+            SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+        }
+
+        Spacer(Modifier.height((12 * k).dp))
+
+        // 表頭
+        Row(
+            Modifier.fillMaxWidth()
+                .background(Color.White.copy(alpha = .04f), RoundedCornerShape((8 * k).dp))
+                .padding(horizontal = (16 * k).dp, vertical = (10 * k).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.width((56 * k).dp), contentAlignment = Alignment.CenterStart) {
+                SoftLabel("POS", Label, k, 13f)
+            }
+            Box(Modifier.weight(2.6f)) {
+                SoftLabel("ATHLETE", Label, k, 13f)
+            }
+            Box(Modifier.weight(2.8f)) {
+                SoftLabel("PROGRESS & DISTANCE", Label, k, 13f)
+            }
+            Box(Modifier.width((90 * k).dp), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("PACE", Label, k, 13f)
+            }
+            Box(Modifier.width((90 * k).dp), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("SPEED", Label, k, 13f)
+            }
+            Box(Modifier.width((120 * k).dp), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("GAP / STATUS", Label, k, 13f)
+            }
+        }
+
+        Spacer(Modifier.height((8 * k).dp))
+
+        // 選手清單 (支援 animateItem() 動態重排動畫)
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy((8 * k).dp),
+        ) {
+            items(entries, key = { it.runnerId }) { entry ->
+                val isMe = entry.runnerId == s.profile.runnerId
+                LeaderboardRow(
+                    entry = entry,
+                    isMe = isMe,
+                    raceDistanceM = s.raceDistanceM,
+                    k = k,
+                    modifier = Modifier.animateItem(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaderboardRow(
+    entry: RaceClient.Entry,
+    isMe: Boolean,
+    raceDistanceM: Double,
+    k: Float,
+    modifier: Modifier = Modifier,
+) {
+    val isP1 = entry.rank == 1
+    val isP2 = entry.rank == 2
+    val isP3 = entry.rank == 3
+
+    val (cardBg, cardBorder) = when {
+        isMe -> Cyan.copy(alpha = .18f) to Cyan.copy(alpha = .85f)
+        isP1 -> Gold.copy(alpha = .10f) to Gold.copy(alpha = .45f)
+        else -> Color.White.copy(alpha = .04f) to Color.White.copy(alpha = .10f)
+    }
+
+    val rankColor = when {
+        isMe -> Cyan
+        isP1 -> Gold
+        isP2 -> Color(0xFFC0D8E0)
+        isP3 -> Amber
+        else -> Label
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height((58 * k).dp)
+            .clip(RoundedCornerShape((12 * k).dp))
+            .background(cardBg)
+            .border((1.2f * k).dp, cardBorder, RoundedCornerShape((12 * k).dp))
+            .padding(horizontal = (16 * k).dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 1. 名次 Badge
+        Box(Modifier.width((56 * k).dp), contentAlignment = Alignment.CenterStart) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Glow(
+                    text = "P${entry.rank}",
+                    color = rankColor,
+                    k = k,
+                    size = if (entry.rank <= 3 || isMe) 22f else 18f,
+                    glow = isP1 || isMe,
+                )
+            }
+        }
+
+        // 2. 選手資訊 (頭像 + 國旗 + 姓名 + YOU 標籤)
+        Row(Modifier.weight(2.6f), verticalAlignment = Alignment.CenterVertically) {
+            val avatarBg = when {
+                isMe -> Cyan
+                isP1 -> Gold
+                else -> Color.White.copy(alpha = .15f)
+            }
+            Box(
+                Modifier.size((36 * k).dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(avatarBg),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = initials(entry.name),
+                    color = if (isMe || isP1) Carbon else Color.White,
+                    fontFamily = Grotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (14 * k).sp,
+                )
+            }
+
+            Spacer(Modifier.width((10 * k).dp))
+
+            Text(
+                text = flagEmoji(entry.country),
+                fontSize = (20 * k).sp,
+            )
+
+            Spacer(Modifier.width((8 * k).dp))
+
+            Text(
+                text = entry.name,
+                color = if (isMe) Cyan else Color.White,
+                fontFamily = Grotesk,
+                fontWeight = if (isMe || isP1) FontWeight.Bold else FontWeight.Medium,
+                fontSize = (17 * k).sp,
+                maxLines = 1,
+            )
+
+            if (isMe) {
+                Spacer(Modifier.width((8 * k).dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50))
+                        .background(Cyan)
+                        .padding(horizontal = (8 * k).dp, vertical = (2 * k).dp)
+                ) {
+                    Text(
+                        text = "YOU",
+                        color = Carbon,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = (11 * k).sp,
+                        letterSpacing = (1 * k).sp,
+                    )
+                }
+            }
+        }
+
+        // 3. 進度 Bar + 距離 + 百分比
+        val pct = (entry.distance / max(1.0, raceDistanceM)).coerceIn(0.0, 1.0).toFloat()
+        val barColor = if (isMe) Cyan else if (isP1) Gold else Color(0xFF6CF3F7)
+        Row(
+            Modifier.weight(2.8f).padding(end = (16 * k).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Text(
+                        text = "%,dm".format(entry.distance.roundToInt()),
+                        color = Color.White,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = (14 * k).sp,
+                    )
+                    Text(
+                        text = "%.1f%%".format(pct * 100f),
+                        color = if (isMe) Cyan else Label,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = (12 * k).sp,
+                    )
+                }
+                Spacer(Modifier.height((4 * k).dp))
+                Canvas(Modifier.fillMaxWidth().height((8 * k).dp)) {
+                    val r = CornerRadius(size.height / 2f)
+                    drawRoundRect(Color.White.copy(alpha = .12f), cornerRadius = r)
+                    if (pct > 0f) {
+                        drawRoundRect(
+                            Brush.horizontalGradient(listOf(barColor.copy(alpha = .7f), barColor)),
+                            size = Size(size.width * pct, size.height),
+                            cornerRadius = r,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. 配速
+        Box(Modifier.width((90 * k).dp), contentAlignment = Alignment.CenterEnd) {
+            Column(horizontalAlignment = Alignment.End) {
+                Glow(
+                    text = fmtPace(entry.pace),
+                    color = if (isMe) Cyan else Color.White,
+                    k = k,
+                    size = 17f,
+                    glow = false,
+                )
+                SoftLabel("/km", Label, k, 11f)
+            }
+        }
+
+        // 5. 速度
+        Box(Modifier.width((90 * k).dp), contentAlignment = Alignment.CenterEnd) {
+            Column(horizontalAlignment = Alignment.End) {
+                Glow(
+                    text = "%.1f".format(entry.speedKmh),
+                    color = Color.White,
+                    k = k,
+                    size = 17f,
+                    glow = false,
+                )
+                SoftLabel("km/h", Label, k, 11f)
+            }
+        }
+
+        // 6. 差距 / 狀態
+        Box(Modifier.width((120 * k).dp), contentAlignment = Alignment.CenterEnd) {
+            when {
+                entry.status == "FINISHED" || entry.finishTimeMs != null -> {
+                    Glow("FINISHED", Gold, k, 15f)
+                }
+                entry.status == "DNF" -> {
+                    Glow("DNF", Coral, k, 15f)
+                }
+                isP1 -> {
+                    Glow("LEADER", Gold, k, 15f, glow = true)
+                }
+                entry.gapToLeaderMs != null -> {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Glow(
+                            text = "+%.1fs".format(entry.gapToLeaderMs / 1000.0),
+                            color = Coral,
+                            k = k,
+                            size = 16f,
+                            glow = false,
+                        )
+                        SoftLabel("TO P1", Label, k, 11f)
+                    }
+                }
+                else -> {
+                    SoftLabel("--", Label, k, 14f)
+                }
+            }
+        }
+    }
+}
+
+private fun flagEmoji(country: String?): String {
+    if (country == null || country.length != 2) return "🌐"
+    val code = country.uppercase()
+    val c0 = code[0]
+    val c1 = code[1]
+    if (c0 !in 'A'..'Z' || c1 !in 'A'..'Z') return "🌐"
+    val first = c0.code - 'A'.code + 0x1F1E6
+    val second = c1.code - 'A'.code + 0x1F1E6
+    return String(Character.toChars(first)) + String(Character.toChars(second))
+}
+
+private fun initials(name: String): String {
+    val clean = name.replace(Regex("[^A-Za-z0-9\\s]"), " ").trim()
+    val parts = clean.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+    return when {
+        parts.isEmpty() -> "?"
+        parts.size == 1 -> parts[0].take(2).uppercase()
+        else -> (parts[0].take(1) + parts[1].take(1)).uppercase()
+    }
+}
+
+fun sampleLeaderboard(myRunnerId: String, myDist: Double, raceDist: Double): List<RaceClient.Entry> {
+    val list = mutableListOf(
+        RaceClient.Entry(
+            rank = 1,
+            runnerId = "R_ELIUD",
+            name = "Eliud Kipchoge",
+            distance = 3650.0,
+            pace = "03'15\"",
+            status = "RUNNING",
+            gapToLeaderMs = null,
+            gapToAheadMs = null,
+            country = "KE",
+            speedKmh = 18.5f,
+            cadence = 190,
+            progressPercent = (3650.0 / raceDist).coerceIn(0.0, 1.0),
+        ),
+        RaceClient.Entry(
+            rank = 2,
+            runnerId = myRunnerId,
+            name = "Tung Lu",
+            distance = myDist,
+            pace = "04'05\"",
+            status = "RUNNING",
+            gapToLeaderMs = 102_000L,
+            gapToAheadMs = 102_000L,
+            country = "TW",
+            speedKmh = 14.8f,
+            cadence = 182,
+            progressPercent = (myDist / raceDist).coerceIn(0.0, 1.0),
+        ),
+        RaceClient.Entry(
+            rank = 3,
+            runnerId = "R_KENJI",
+            name = "Kenji Sato",
+            distance = 3080.0,
+            pace = "04'13\"",
+            status = "RUNNING",
+            gapToLeaderMs = 138_000L,
+            gapToAheadMs = 36_000L,
+            country = "JP",
+            speedKmh = 14.2f,
+            cadence = 178,
+            progressPercent = (3080.0 / raceDist).coerceIn(0.0, 1.0),
+        ),
+        RaceClient.Entry(
+            rank = 4,
+            runnerId = "R_SARAH",
+            name = "Sarah Connor",
+            distance = 2850.0,
+            pace = "04'26\"",
+            status = "RUNNING",
+            gapToLeaderMs = 194_000L,
+            gapToAheadMs = 56_000L,
+            country = "US",
+            speedKmh = 13.5f,
+            cadence = 174,
+            progressPercent = (2850.0 / raceDist).coerceIn(0.0, 1.0),
+        ),
+        RaceClient.Entry(
+            rank = 5,
+            runnerId = "R_LUKAS",
+            name = "Lukas Weber",
+            distance = 2600.0,
+            pace = "04'41\"",
+            status = "RUNNING",
+            gapToLeaderMs = 255_000L,
+            gapToAheadMs = 61_000L,
+            country = "DE",
+            speedKmh = 12.8f,
+            cadence = 170,
+            progressPercent = (2600.0 / raceDist).coerceIn(0.0, 1.0),
+        ),
+        RaceClient.Entry(
+            rank = 6,
+            runnerId = "R_EMMA",
+            name = "Emma Watson",
+            distance = 2320.0,
+            pace = "05'00\"",
+            status = "RUNNING",
+            gapToLeaderMs = 322_000L,
+            gapToAheadMs = 67_000L,
+            country = "GB",
+            speedKmh = 12.0f,
+            cadence = 166,
+            progressPercent = (2320.0 / raceDist).coerceIn(0.0, 1.0),
+        ),
+    )
+    return list.sortedByDescending { it.distance }.mapIndexed { idx, e ->
+        e.copy(rank = idx + 1)
     }
 }
 
@@ -1935,6 +2535,29 @@ private fun PrimaryPill(text: String, k: Float, onClick: () -> Unit) = Row(
     Spacer(Modifier.width((12 * k).dp))
     Text(
         text, color = Carbon, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
+        fontSize = (18 * k).sp, letterSpacing = (1.8 * k).sp, maxLines = 1,
+    )
+}
+
+/** 次要動作鈕：Amber / Gold 柔光膠囊（用於展示/驗證模式）。 */
+@Composable
+private fun SecondaryPill(text: String, k: Float, onClick: () -> Unit) = Row(
+    Modifier.fillMaxWidth().height((60 * k).dp)
+        .glass(k, Amber.copy(alpha = .45f), Color.White.copy(alpha = .04f), radius = 50f)
+        .clickable(onClick = onClick),
+    horizontalArrangement = Arrangement.Center,
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Canvas(Modifier.size((13 * k).dp)) {
+        val r = 2f * k
+        drawPath(
+            Path().apply { moveTo(r, 0f); lineTo(size.width, size.height / 2f); lineTo(r, size.height); close() },
+            Amber,
+        )
+    }
+    Spacer(Modifier.width((12 * k).dp))
+    Text(
+        text, color = Amber, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
         fontSize = (18 * k).sp, letterSpacing = (1.8 * k).sp, maxLines = 1,
     )
 }

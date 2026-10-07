@@ -49,6 +49,12 @@ class RaceClient(
         val gapToLeaderMs: Long?,
         /** 落後前一名的距離 ÷ 自己目前速度；領先者或速度為 0 時為 null */
         val gapToAheadMs: Long? = null,
+        val country: String? = null,
+        val avatarUrl: String? = null,
+        val speedKmh: Float = 0f,
+        val cadence: Int = 0,
+        val progressPercent: Double = 0.0,
+        val finishTimeMs: Long? = null,
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -233,6 +239,12 @@ class RaceClient(
                 status = o.getString("status"),
                 gapToLeaderMs = if (o.isNull("gapToLeaderMs")) null else o.getLong("gapToLeaderMs"),
                 gapToAheadMs = if (!o.has("gapToAheadMs") || o.isNull("gapToAheadMs")) null else o.getLong("gapToAheadMs"),
+                country = if (o.has("country") && !o.isNull("country")) o.getString("country") else null,
+                avatarUrl = if (o.has("avatarUrl") && !o.isNull("avatarUrl")) o.getString("avatarUrl") else null,
+                speedKmh = if (o.has("speedKmh")) o.getDouble("speedKmh").toFloat() else 0f,
+                cadence = if (o.has("cadence")) o.getInt("cadence") else 0,
+                progressPercent = if (o.has("progressPercent")) o.getDouble("progressPercent") else 0.0,
+                finishTimeMs = if (o.has("finishTimeMs") && !o.isNull("finishTimeMs")) o.getLong("finishTimeMs") else null,
             )
         }
     }
