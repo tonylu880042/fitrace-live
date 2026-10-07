@@ -15,7 +15,11 @@ import java.util.UUID
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.res.painterResource
@@ -135,6 +139,12 @@ data class Profile(
     val country: String = "TW",
 )
 
+data class RunnerJoinedAlert(
+    val event: RunnerJoinedEvent,
+    val shownAtMs: Long,
+    val seq: Long,
+)
+
 data class RaceUiState(
     val screen: Screen = Screen.PROFILE,
     val profile: Profile = Profile(),
@@ -183,6 +193,8 @@ data class RaceUiState(
     val viewMode: RaceViewMode = RaceViewMode.COCKPIT,
     /** 全場即時排行榜名單 */
     val leaderboard: List<RaceClient.Entry> = emptyList(),
+    /** 選手進入房間提示（新增選手特效） */
+    val newRunnerAlert: RunnerJoinedAlert? = null,
 ) {
     /** 可以離開回大廳：尚未發令，或自己已完賽，或比賽已關閉。比賽中不給一鍵離開，免得誤觸。 */
     val canLeave: Boolean get() = startAtServerTime == null || finishTimeMs != null || closed
@@ -357,7 +369,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         _state.value = _state.value.copy(viewMode = next)
     }
 
-    fun enterVerificationRace(profile: Profile? = null) {
+    fun enterVerificationRace(profile: Profile? = null, cockpitMode: Boolean = false) {
         val p = profile ?: _state.value.profile
         saveProfileToPrefs(p)
         val raceDist = 5000.0
@@ -385,7 +397,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             gapToNeighbourM = 150.0,
             leaderDistanceM = 3650.0,
             beltStatus = BeltStatus.RUNNING,
-            viewMode = RaceViewMode.LEADERBOARD,
+            viewMode = if (cockpitMode) RaceViewMode.COCKPIT else RaceViewMode.LEADERBOARD,
             leaderboard = sampleBoard,
         )
     }
@@ -552,6 +564,44 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         leaveToLobby("$room — RACE CANCELLED BY ORGANIZER")
     }
 
+    override fun onRunnerJoined(event: RunnerJoinedEvent) {
+        // 自己進入房間不需彈出提示
+        if (event.runnerId == _state.value.profile.runnerId) return
+        val seq = System.currentTimeMillis()
+        val curField = _state.value.fieldSize
+        val newField = if (event.fieldSize > 0) event.fieldSize else curField + 1
+        _state.value = _state.value.copy(
+            fieldSize = newField,
+            newRunnerAlert = RunnerJoinedAlert(event, System.currentTimeMillis(), seq),
+        )
+    }
+
+    fun dismissRunnerAlert() {
+        _state.value = _state.value.copy(newRunnerAlert = null)
+    }
+
+    fun triggerMockRunnerJoinedAlert() {
+        val mockEvent = RunnerJoinedEvent(
+            roomId = _state.value.roomId.ifEmpty { "R0001" },
+            runnerId = "R_ELIUD",
+            name = "Eliud Kipchoge",
+            country = "KE",
+            bib = "341",
+            avatarUrl = null,
+            lane = 3,
+            deviceId = "TREADMILL CONSOLE #03",
+            fieldSize = 6,
+            capacity = 8,
+            tier = "WORLD CLASS TIER",
+            bio = "Marathon World Record Holder · 5,000M Olympic Finalist",
+            pr5k = "14:15.0",
+            targetPace = "02:50.4",
+            vo2Max = 84.2f,
+            serverTime = System.currentTimeMillis(),
+        )
+        onRunnerJoined(mockEvent)
+    }
+
     override fun onCleared() {
         main.removeCallbacksAndMessages(null)
         treadmill.disconnect()
@@ -566,14 +616,37 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 }
 
 class MainActivity : ComponentActivity() {
+    private var vmRef: RaceViewModel? = null
+
+    override fun onNewIntent(newIntent: android.content.Intent) {
+        super.onNewIntent(newIntent)
+        setIntent(newIntent)
+        if (newIntent.getBooleanExtra("verify_runner_alert", false)) {
+            vmRef?.triggerMockRunnerJoinedAlert()
+        }
+        if (newIntent.getBooleanExtra("verify_runner_cockpit", false)) {
+            vmRef?.enterVerificationRace(cockpitMode = true)
+            vmRef?.triggerMockRunnerJoinedAlert()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Carbon, surface = Deep)) {
                 val vm: RaceViewModel = viewModel()
+                vmRef = vm
                 LaunchedEffect(Unit) {
                     if (intent?.getBooleanExtra("verify_leaderboard", false) == true) {
                         vm.enterVerificationRace()
+                    }
+                    if (intent?.getBooleanExtra("verify_runner_alert", false) == true) {
+                        vm.enterVerificationRace()
+                        vm.triggerMockRunnerJoinedAlert()
+                    }
+                    if (intent?.getBooleanExtra("verify_runner_cockpit", false) == true) {
+                        vm.enterVerificationRace(cockpitMode = true)
+                        vm.triggerMockRunnerJoinedAlert()
                     }
                 }
                 val state by vm.state.collectAsState()
@@ -635,15 +708,21 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
                 )
             }
             Spacer(Modifier.height((8 * k).dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy((12 * k).dp)) {
-                Box(Modifier.weight(1f)) {
-                    PrimaryPill("ENTER RACE LOBBY", k) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy((10 * k).dp)) {
+                Box(Modifier.weight(1.1f)) {
+                    PrimaryPill("ENTER LOBBY", k) {
                         vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
                     }
                 }
-                Box(Modifier.weight(1f)) {
-                    SecondaryPill("DEMO / VERIFY HUD", k) {
+                Box(Modifier.weight(0.95f)) {
+                    SecondaryPill("VERIFY HUD", k) {
                         vm.enterVerificationRace(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+                    }
+                }
+                Box(Modifier.weight(1.05f)) {
+                    SecondaryPill("ALERT EFFECT", k) {
+                        vm.enterVerificationRace(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+                        vm.triggerMockRunnerJoinedAlert()
                     }
                 }
             }
@@ -721,6 +800,571 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
                 Modifier.align(Alignment.Center).glass(k, Coral.copy(alpha = .6f), Color(0xCC1A0A12))
                     .padding(horizontal = (48 * k).dp, vertical = (28 * k).dp)
             ) { Glow("SAFETY KEY DETACHED", Coral, k, 40f) }
+        }
+
+        // 新選手加入比賽房間通知特效（Google Stitch 電競戰術彈卡）
+        s.newRunnerAlert?.let { alert ->
+            NewRunnerOverlay(
+                alert = alert,
+                now = now,
+                k = k,
+                audio = audio,
+                onDismiss = { vm.dismissRunnerAlert() },
+            )
+        }
+    }
+}
+
+/* ── 新選手進入房間特效通知（Google Stitch 設計） ── */
+
+private const val RUNNER_ALERT_DURATION_MS = 5000L
+
+private fun countryFullName(code: String?): String = when (code?.uppercase()) {
+    "KE" -> "KENYA"
+    "TW" -> "TAIWAN"
+    "US", "USA" -> "USA"
+    "JP" -> "JAPAN"
+    "GB" -> "GREAT BRITAIN"
+    "DE" -> "GERMANY"
+    "FR" -> "FRANCE"
+    "ETH", "ET" -> "ETHIOPIA"
+    else -> code?.uppercase() ?: "ATHLETE"
+}
+
+/** 削角多邊形（Chamfer Corner Cut），與 Stitch 設計中的 .clip-chamfer-corner 100% 對齊 */
+class ChamferCutShape(private val cut: Float) : androidx.compose.ui.graphics.Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+        density: androidx.compose.ui.unit.Density,
+    ): androidx.compose.ui.graphics.Outline {
+        val path = Path().apply {
+            moveTo(0f, 0f)
+            lineTo(size.width - cut, 0f)
+            lineTo(size.width, cut)
+            lineTo(size.width, size.height)
+            lineTo(cut, size.height)
+            lineTo(0f, size.height - cut)
+            close()
+        }
+        return androidx.compose.ui.graphics.Outline.Generic(path)
+    }
+}
+
+@Composable
+private fun BoxScope.NewRunnerOverlay(
+    alert: RunnerJoinedAlert,
+    now: Long,
+    k: Float,
+    audio: CountdownAudio,
+    onDismiss: () -> Unit,
+) {
+    val evt = alert.event
+    val elapsed = (now - alert.shownAtMs).coerceAtLeast(0L)
+    val remainingSecs = max(0f, (RUNNER_ALERT_DURATION_MS - elapsed) / 1000f)
+    val progress = (1f - elapsed.toFloat() / RUNNER_ALERT_DURATION_MS).coerceIn(0f, 1f)
+
+    LaunchedEffect(alert.seq) {
+        val laneText = evt.lane?.let { "Lane $it" } ?: ""
+        audio.say("New challenger joined heat. ${evt.name}. $laneText")
+    }
+
+    LaunchedEffect(now) {
+        if (elapsed >= RUNNER_ALERT_DURATION_MS) {
+            onDismiss()
+        }
+    }
+
+    val enterAnim = remember { Animatable(0f) }
+    LaunchedEffect(alert.seq) {
+        enterAnim.snapTo(0f)
+        enterAnim.animateTo(1f, tween(320, easing = FastOutSlowInEasing))
+    }
+
+    val infinite = rememberInfiniteTransition(label = "runnerAlertFx")
+    val laserProgress by infinite.animateFloat(
+        initialValue = -0.4f,
+        targetValue = 1.4f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = tween(2200, easing = LinearEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Restart,
+        ),
+        label = "laser",
+    )
+    val rotAngle by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = tween(14000, easing = LinearEasing),
+        ),
+        label = "rot",
+    )
+    val beaconPulse by infinite.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.4f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = tween(1000, easing = FastOutSlowInEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "beacon",
+    )
+
+    // 全螢幕半透明遮罩
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.68f * enterAnim.value))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        val cutPx = 20f * k
+        val cardShape = remember(cutPx) { ChamferCutShape(cutPx) }
+
+        // 戰術電競彈出卡主體
+        Box(
+            Modifier.width((780 * k).dp)
+                .graphicsLayer {
+                    val t = enterAnim.value
+                    scaleX = 0.88f + 0.12f * t
+                    scaleY = 0.88f + 0.12f * t
+                    alpha = t
+                }
+                .clickable(enabled = false) {} // 點擊卡片內部不關閉
+                .clip(cardShape)
+                .background(Color(0xF5081118))
+                .border((1.8f * k).dp, Cyan.copy(alpha = 0.85f), cardShape)
+                .drawBehind {
+                    // 電競金色直角 brackets 裝飾（四個角落）
+                    val bLen = 24f * k
+                    val bStroke = 3.5f * k
+                    // Top-Left
+                    drawLine(Gold, Offset(0f, 0f), Offset(bLen, 0f), strokeWidth = bStroke)
+                    drawLine(Gold, Offset(0f, 0f), Offset(0f, bLen), strokeWidth = bStroke)
+                    // Top-Right
+                    drawLine(Gold, Offset(size.width, 0f), Offset(size.width - bLen, 0f), strokeWidth = bStroke)
+                    drawLine(Gold, Offset(size.width, 0f), Offset(size.width, bLen), strokeWidth = bStroke)
+                    // Bottom-Left
+                    drawLine(Gold, Offset(0f, size.height), Offset(bLen, size.height), strokeWidth = bStroke)
+                    drawLine(Gold, Offset(0f, size.height), Offset(0f, size.height - bLen), strokeWidth = bStroke)
+                    // Bottom-Right
+                    drawLine(Gold, Offset(size.width, size.height), Offset(size.width - bLen, size.height), strokeWidth = bStroke)
+                    drawLine(Gold, Offset(size.width, size.height), Offset(size.width, size.height - bLen), strokeWidth = bStroke)
+
+                    // 雷射光線掃描效果
+                    val lx = size.width * laserProgress
+                    val lWidth = 140f * k
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            listOf(Color.Transparent, Cyan.copy(alpha = 0.15f), Color.Transparent),
+                            startX = lx - lWidth / 2f,
+                            endX = lx + lWidth / 2f,
+                        ),
+                        size = size,
+                    )
+                }
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                // 1. 頂部狀態列
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((50 * k).dp)
+                        .background(Color(0xF0050B10))
+                        .padding(horizontal = (20 * k).dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 脈衝雷達點
+                        Box(Modifier.size((16 * k).dp), contentAlignment = Alignment.Center) {
+                            Canvas(Modifier.fillMaxSize()) {
+                                drawCircle(Cyan.copy(alpha = 0.35f), radius = (size.minDimension / 2f) * beaconPulse)
+                                drawCircle(Cyan, radius = size.minDimension / 3f)
+                            }
+                        }
+                        Spacer(Modifier.width((10 * k).dp))
+                        Text(
+                            text = "⚡ NEW CHALLENGER JOINED HEAT",
+                            color = Cyan,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (15 * k).sp,
+                            letterSpacing = (1.4 * k).sp,
+                        )
+                    }
+
+                    // 房間選手席位狀態
+                    val totalSlots = evt.capacity ?: 8
+                    val openSlots = max(0, totalSlots - evt.fieldSize)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${evt.fieldSize} / $totalSlots ATHLETES READY",
+                            color = Gold,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (13 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                        Text(
+                            text = "  ·  ",
+                            color = Label,
+                            fontFamily = Grotesk,
+                            fontSize = (13 * k).sp,
+                        )
+                        Text(
+                            text = "$openSlots SLOTS OPEN",
+                            color = Coral,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = (13 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Cyan.copy(alpha = 0.35f)))
+
+                // 2. 選手資料與 PR 矩陣本體
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = (24 * k).dp, vertical = (20 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 左側選手頭像、水道、機台編號
+                    Column(
+                        Modifier.width((190 * k).dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Box(Modifier.size((124 * k).dp), contentAlignment = Alignment.Center) {
+                            // 動態旋轉虛線光環
+                            Canvas(Modifier.fillMaxSize()) {
+                                val strokeW = 2.2f * k
+                                val radius = size.minDimension / 2f - strokeW
+                                drawCircle(
+                                    color = Cyan.copy(alpha = 0.5f),
+                                    radius = radius,
+                                    style = Stroke(
+                                        width = strokeW,
+                                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                                            floatArrayOf(12f * k, 10f * k),
+                                            phase = rotAngle * 2f,
+                                        ),
+                                    ),
+                                )
+                            }
+
+                            // 漸層光圈與深黑底
+                            Box(
+                                Modifier.size((106 * k).dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Brush.linearGradient(listOf(Cyan, Gold, Cyan)))
+                                    .padding((3.5f * k).dp)
+                            ) {
+                                Box(
+                                    Modifier.fillMaxSize()
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Carbon),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = flagEmoji(evt.country),
+                                            fontSize = (26 * k).sp,
+                                        )
+                                        Text(
+                                            text = initials(evt.name),
+                                            color = Cyan,
+                                            fontFamily = Grotesk,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = (20 * k).sp,
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 水道標籤
+                            Box(
+                                Modifier.align(Alignment.BottomCenter)
+                                    .offset(y = (8 * k).dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Gold)
+                                    .padding(horizontal = (12 * k).dp, vertical = (3 * k).dp)
+                            ) {
+                                Text(
+                                    text = "LANE %02d".format(evt.lane ?: evt.fieldSize),
+                                    color = Carbon,
+                                    fontFamily = Grotesk,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = (12 * k).sp,
+                                    letterSpacing = (1.2 * k).sp,
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height((18 * k).dp))
+
+                        // 跑步機連線標籤
+                        Row(
+                            Modifier.clip(RoundedCornerShape(50))
+                                .background(Color(0xFF131D24))
+                                .border((1 * k).dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
+                                .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size((7 * k).dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Cyan)
+                            )
+                            Spacer(Modifier.width((6 * k).dp))
+                            Text(
+                                text = evt.deviceId ?: "TREADMILL CONSOLE #%02d".format(evt.lane ?: 3),
+                                color = Label,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = (10 * k).sp,
+                                letterSpacing = (0.5 * k).sp,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.width((24 * k).dp))
+
+                    // 右側詳細資料與 Bento 矩陣
+                    Column(Modifier.weight(1f)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                Modifier.clip(RoundedCornerShape((4 * k).dp))
+                                    .background(Gold.copy(alpha = 0.12f))
+                                    .border((1 * k).dp, Gold.copy(alpha = 0.35f), RoundedCornerShape((4 * k).dp))
+                                    .padding(horizontal = (8 * k).dp, vertical = (3 * k).dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "${countryFullName(evt.country)} ${flagEmoji(evt.country)} · EAST AFRICA ATHLETICS",
+                                    color = Gold,
+                                    fontFamily = Grotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = (11 * k).sp,
+                                    letterSpacing = (0.8 * k).sp,
+                                )
+                            }
+
+                            Text(
+                                text = evt.tier ?: "WORLD CLASS TIER",
+                                color = Cyan,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (11 * k).sp,
+                                letterSpacing = (1 * k).sp,
+                            )
+                        }
+
+                        Spacer(Modifier.height((6 * k).dp))
+
+                        Text(
+                            text = evt.name.uppercase(),
+                            color = Color.White,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (32 * k).sp,
+                            letterSpacing = (-0.5 * k).sp,
+                            maxLines = 1,
+                        )
+
+                        Text(
+                            text = evt.bio ?: "Marathon World Record Holder · 5,000M Olympic Finalist",
+                            color = Label,
+                            fontFamily = Grotesk,
+                            fontSize = (13 * k).sp,
+                            maxLines = 1,
+                        )
+
+                        Spacer(Modifier.height((12 * k).dp))
+
+                        // 3 欄 Bento 數據矩陣
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape((8 * k).dp))
+                                .background(Color(0xFF060D12))
+                                .border((1 * k).dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape((8 * k).dp))
+                                .padding(horizontal = (12 * k).dp, vertical = (10 * k).dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Col 1: 5KM PR
+                            Column(Modifier.weight(1f)) {
+                                Text("5KM PR", color = Label, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text(evt.pr5k ?: "14:15.0", color = Gold, fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = (18 * k).sp)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text("PACE 02:51 /KM", color = Cyan, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                            }
+
+                            Box(Modifier.width((1 * k).dp).height((40 * k).dp).background(Color.White.copy(alpha = 0.12f)))
+
+                            // Col 2: TARGET PACE
+                            Column(Modifier.weight(1.1f).padding(horizontal = (10 * k).dp)) {
+                                Text("PROJECTED PACE", color = Label, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text(evt.targetPace ?: "02:50.4", color = Cyan, fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = (18 * k).sp)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text("SPLIT DELTA: -0.8s", color = Label, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                            }
+
+                            Box(Modifier.width((1 * k).dp).height((40 * k).dp).background(Color.White.copy(alpha = 0.12f)))
+
+                            // Col 3: VO2 PEAK
+                            Column(Modifier.weight(0.9f).padding(start = (10 * k).dp)) {
+                                Text("VO2 PEAK", color = Label, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text(
+                                    evt.vo2Max?.let { "%.1f".format(it) } ?: "84.2",
+                                    color = Coral,
+                                    fontFamily = Grotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = (18 * k).sp,
+                                )
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text("ML/KG/MIN", color = Label, fontFamily = Grotesk, fontSize = (10 * k).sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+
+                        Spacer(Modifier.height((10 * k).dp))
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "⚡ SYNCED: 21.2 KM/H MAX",
+                                    color = Label,
+                                    fontFamily = Grotesk,
+                                    fontSize = (11 * k).sp,
+                                )
+                                Text(
+                                    text = "  ·  ",
+                                    color = Label,
+                                    fontFamily = Grotesk,
+                                    fontSize = (11 * k).sp,
+                                )
+                                Text(
+                                    text = "DUAL-LINK: 0% LOSS",
+                                    color = Label,
+                                    fontFamily = Grotesk,
+                                    fontSize = (11 * k).sp,
+                                )
+                            }
+
+                            Text(
+                                text = "WARM-UP COMPLETE",
+                                color = Gold,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (11 * k).sp,
+                                letterSpacing = (0.5 * k).sp,
+                            )
+                        }
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Color.White.copy(alpha = 0.12f)))
+
+                // 3. 底部動作列（倒數進度條 + 按鈕）
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((56 * k).dp)
+                        .background(Color(0xE0121A20))
+                        .padding(horizontal = (20 * k).dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 自動倒數進度條
+                    Row(
+                        Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "AUTO-DISMISS",
+                            color = Label,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = (11 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                        Spacer(Modifier.width((10 * k).dp))
+                        Box(
+                            Modifier.width((180 * k).dp)
+                                .height((6 * k).dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Color.White.copy(alpha = 0.1f))
+                        ) {
+                            Box(
+                                Modifier.fillMaxHeight()
+                                    .fillMaxWidth(progress)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(Cyan.copy(alpha = 0.6f), Cyan)
+                                        )
+                                    )
+                            )
+                        }
+                        Spacer(Modifier.width((10 * k).dp))
+                        Text(
+                            text = "%.1fs".format(remainingSecs),
+                            color = Cyan,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (12 * k).sp,
+                        )
+                    }
+
+                    // 動作按鈕
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy((10 * k).dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier.clip(RoundedCornerShape((6 * k).dp))
+                                .background(Color(0xFF1B242C))
+                                .border((1 * k).dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape((6 * k).dp))
+                                .clickable(onClick = onDismiss)
+                                .padding(horizontal = (16 * k).dp, vertical = (8 * k).dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "✕ DISMISS",
+                                color = Color.White,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = (12 * k).sp,
+                                letterSpacing = (0.8 * k).sp,
+                            )
+                        }
+
+                        Box(
+                            Modifier.clip(RoundedCornerShape((6 * k).dp))
+                                .background(Cyan)
+                                .clickable(onClick = onDismiss)
+                                .padding(horizontal = (18 * k).dp, vertical = (8 * k).dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "◎ TAP TO VIEW PROFILE",
+                                color = Carbon,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = (12 * k).sp,
+                                letterSpacing = (0.8 * k).sp,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

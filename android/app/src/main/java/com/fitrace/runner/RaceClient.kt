@@ -14,6 +14,25 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import kotlin.math.min
 
+data class RunnerJoinedEvent(
+    val roomId: String,
+    val runnerId: String,
+    val name: String,
+    val country: String? = null,
+    val bib: String? = null,
+    val avatarUrl: String? = null,
+    val lane: Int? = null,
+    val deviceId: String? = null,
+    val fieldSize: Int = 0,
+    val capacity: Int? = null,
+    val tier: String? = null,
+    val bio: String? = null,
+    val pr5k: String? = null,
+    val targetPace: String? = null,
+    val vo2Max: Float? = null,
+    val serverTime: Long = 0L,
+)
+
 /**
  * 雲端連線：Token 取得、時鐘對齊（§3.1）、遙測上報與榜單接收（§3.4）。
  * 協議與 `server/src/lib.rs` 的 DTO 對應，JSON 直接用 Android 內建的 org.json，不另外拉序列化函式庫。
@@ -33,6 +52,7 @@ class RaceClient(
         fun onClockSynced(offsetMs: Long, rttMs: Long)
         fun onRaceScheduled(startAtServerTime: Long, raceDistanceM: Double, cutoffAtServerTime: Long?)
         fun onLeaderboard(entries: List<Entry>)
+        fun onRunnerJoined(event: RunnerJoinedEvent)
         /** 報名被拒，error 碼：REGISTRATION_CLOSED、ROOM_FULL、RUNNER_ID_IN_USE、ROOM_NOT_FOUND */
         fun onJoinRejected(reason: String)
         fun onRaceClosed(reason: String)
@@ -55,6 +75,7 @@ class RaceClient(
         val cadence: Int = 0,
         val progressPercent: Double = 0.0,
         val finishTimeMs: Long? = null,
+        val lane: Int? = null,
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -188,6 +209,27 @@ class RaceClient(
                     val entries = parseRankings(msg)
                     post { listener.onLeaderboard(entries) }
                 }
+                "RUNNER_JOINED" -> {
+                    val event = RunnerJoinedEvent(
+                        roomId = msg.optString("roomId", roomId),
+                        runnerId = msg.optString("runnerId", ""),
+                        name = msg.optString("name", ""),
+                        country = if (msg.has("country") && !msg.isNull("country")) msg.getString("country") else null,
+                        bib = if (msg.has("bib") && !msg.isNull("bib")) msg.getString("bib") else null,
+                        avatarUrl = if (msg.has("avatarUrl") && !msg.isNull("avatarUrl")) msg.getString("avatarUrl") else null,
+                        lane = if (msg.has("lane") && !msg.isNull("lane")) msg.getInt("lane") else null,
+                        deviceId = if (msg.has("deviceId") && !msg.isNull("deviceId")) msg.getString("deviceId") else null,
+                        fieldSize = msg.optInt("fieldSize", 0),
+                        capacity = if (msg.has("capacity") && !msg.isNull("capacity")) msg.getInt("capacity") else null,
+                        tier = if (msg.has("tier") && !msg.isNull("tier")) msg.getString("tier") else null,
+                        bio = if (msg.has("bio") && !msg.isNull("bio")) msg.getString("bio") else null,
+                        pr5k = if (msg.has("pr5k") && !msg.isNull("pr5k")) msg.getString("pr5k") else null,
+                        targetPace = if (msg.has("targetPace") && !msg.isNull("targetPace")) msg.getString("targetPace") else null,
+                        vo2Max = if (msg.has("vo2Max") && !msg.isNull("vo2Max")) msg.getDouble("vo2Max").toFloat() else null,
+                        serverTime = msg.optLong("serverTime", System.currentTimeMillis()),
+                    )
+                    post { listener.onRunnerJoined(event) }
+                }
                 "RACE_CLOSED" -> {
                     val reason = msg.getString("reason")
                     post { listener.onRaceClosed(reason) }
@@ -245,6 +287,7 @@ class RaceClient(
                 cadence = if (o.has("cadence")) o.getInt("cadence") else 0,
                 progressPercent = if (o.has("progressPercent")) o.getDouble("progressPercent") else 0.0,
                 finishTimeMs = if (o.has("finishTimeMs") && !o.isNull("finishTimeMs")) o.getLong("finishTimeMs") else null,
+                lane = if (o.has("lane") && !o.isNull("lane")) o.getInt("lane") else null,
             )
         }
     }

@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>FITRACE // HUD-01 - 10-Inch Cockpit Display</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: JetBrains Mono & Space Grotesk -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;0,800;1,700&amp;family=Space+Grotesk:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Theme Configuration Verbatim -->
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "outline": "#849495",
+            "tertiary": "#fff5de",
+            "on-background": "#dee3ec",
+            "surface-container-low": "#171c22",
+            "secondary-fixed-dim": "#ffb2ba",
+            "secondary-fixed": "#ffd9dc",
+            "secondary": "#ffb2ba",
+            "on-tertiary-fixed": "#221b00",
+            "primary": "#dbfcff",
+            "on-secondary-fixed-variant": "#910030",
+            "surface-bright": "#343a41",
+            "secondary-container": "#d4004b",
+            "on-secondary-container": "#ffe6e8",
+            "background": "#0e141a",
+            "primary-container": "#00f0ff",
+            "on-error": "#690005",
+            "on-secondary": "#670020",
+            "error": "#ffb4ab",
+            "on-tertiary-container": "#705d00",
+            "tertiary-fixed-dim": "#e9c400",
+            "surface-container": "#1b2027",
+            "primary-fixed": "#7df4ff",
+            "surface-dim": "#0e141a",
+            "surface": "#0e141a",
+            "error-container": "#93000a",
+            "surface-container-high": "#252a31",
+            "on-tertiary": "#3a3000",
+            "on-secondary-fixed": "#400011",
+            "surface-tint": "#00dbe9",
+            "inverse-on-surface": "#2b3138",
+            "on-primary-container": "#006970",
+            "on-surface": "#dee3ec",
+            "on-error-container": "#ffdad6",
+            "tertiary-container": "#ffd700",
+            "surface-container-highest": "#30353c",
+            "on-primary": "#00363a",
+            "on-primary-fixed-variant": "#004f54",
+            "surface-variant": "#30353c",
+            "on-tertiary-fixed-variant": "#544600",
+            "on-primary-fixed": "#002022",
+            "outline-variant": "#3b494b",
+            "surface-container-lowest": "#090f15",
+            "tertiary-fixed": "#ffe16d",
+            "primary-fixed-dim": "#00dbe9",
+            "inverse-surface": "#dee3ec",
+            "inverse-primary": "#006970",
+            "on-surface-variant": "#b9cacb"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-md": "1rem",
+            "space-lg": "1.5rem",
+            "gutter": "1.5rem",
+            "space-xl": "2.5rem",
+            "margin": "3rem"
+          },
+          "fontFamily": {
+            "body-md": ["Space Grotesk"],
+            "telemetry-lg": ["JetBrains Mono"],
+            "headline-xl": ["Space Grotesk"],
+            "telemetry-hero": ["JetBrains Mono"],
+            "telemetry-md": ["JetBrains Mono"],
+            "headline-lg": ["Space Grotesk"],
+            "body-lg": ["Space Grotesk"],
+            "headline-md": ["Space Grotesk"],
+            "telemetry-sm": ["JetBrains Mono"],
+            "label-uppercase": ["JetBrains Mono"],
+            "headline-sm": ["Space Grotesk"]
+          },
+          "fontSize": {
+            "body-md": ["1rem", { "lineHeight": "1.35rem", "fontWeight": "400" }],
+            "telemetry-lg": ["2.25rem", { "lineHeight": "2.5rem", "letterSpacing": "-0.03em", "fontWeight": "700" }],
+            "headline-xl": ["4.5rem", { "lineHeight": "4.75rem", "letterSpacing": "-0.04em", "fontWeight": "700" }],
+            "telemetry-hero": ["4rem", { "lineHeight": "4rem", "letterSpacing": "-0.05em", "fontWeight": "800" }],
+            "telemetry-md": ["1.5rem", { "lineHeight": "1.75rem", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "headline-lg": ["3rem", { "lineHeight": "3.25rem", "letterSpacing": "-0.03em", "fontWeight": "700" }],
+            "body-lg": ["1.25rem", { "lineHeight": "1.5rem", "fontWeight": "500" }],
+            "headline-md": ["2rem", { "lineHeight": "2.25rem", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "telemetry-sm": ["1rem", { "lineHeight": "1.25rem", "letterSpacing": "0em", "fontWeight": "500" }],
+            "label-uppercase": ["0.75rem", { "lineHeight": "0.9rem", "letterSpacing": "0.15em", "fontWeight": "700" }],
+            "headline-sm": ["1.5rem", { "lineHeight": "1.75rem", "letterSpacing": "0em", "fontWeight": "600" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    
+    /* Tactical Scanlines & Cockpit Grid */
+    .cockpit-grid {
+      background-size: 40px 40px;
+      background-image: 
+        linear-gradient(to right, rgba(0, 240, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
+    }
+    .perspective-grid {
+      perspective: 600px;
+      transform-style: preserve-3d;
+    }
+    .tunnel-plane {
+      transform: rotateX(65deg) translateZ(-40px);
+      background-image: radial-gradient(circle, rgba(0, 240, 255, 0.12) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+
+    /* Chamfer Cuts */
+    .clip-chamfer-corner {
+      clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px));
+    }
+    .clip-trapezoid {
+      clip-path: polygon(8% 0%, 92% 0%, 100% 100%, 0% 100%);
+    }
+    .clip-badge {
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+    }
+
+    /* Glow Keyframes */
+    @keyframes laserScan {
+      0% { transform: translateX(-100%); opacity: 0; }
+      50% { opacity: 0.8; }
+      100% { transform: translateX(200%); opacity: 0; }
+    }
+    .animate-laser {
+      animation: laserScan 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes radarPulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.6); }
+      70% { transform: scale(1); box-shadow: 0 0 0 16px rgba(0, 240, 255, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+    }
+    .animate-radar {
+      animation: radarPulse 2s infinite ease-out;
+    }
+
+    @keyframes liveBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .animate-live-blink {
+      animation: liveBlink 1.4s ease-in-out infinite;
+    }
+
+    /* Auto-dismiss countdown bar */
+    @keyframes dismissProgress {
+      0% { width: 100%; }
+      100% { width: 0%; }
+    }
+    .animate-countdown-bar {
+      animation: dismissProgress 6s linear forwards;
+    }
+  </style>
+</head>
+<body class="bg-surface-container-lowest text-on-surface antialiased overflow-hidden select-none font-body-md w-screen h-screen">
+<!-- ========================================================================= -->
+<!-- 1. SHARED COMPONENT: TopNavBar (Exact JSON Implementation & Style Tokens) -->
+<!-- ========================================================================= -->
+<header class="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 h-16 w-full border-b border-outline-variant/40 bg-surface-container-lowest/90 backdrop-blur-md shadow-[0_4px_20px_rgba(0,240,255,0.15)]">
+<!-- Left: Brand Logo & Sub-Label -->
+<div class="flex items-center space-x-4">
+<div class="flex items-center space-x-2">
+<span class="inline-block w-2.5 h-2.5 bg-primary-container shadow-[0_0_8px_#00f0ff] rotate-45"></span>
+<span class="font-telemetry-md text-telemetry-md tracking-wider font-extrabold text-primary-container dark:text-primary-container">
+          FITRACE // HUD-01
+        </span>
+</div>
+<span class="text-outline-variant">|</span>
+<div class="flex items-center space-x-2 font-label-uppercase text-label-uppercase text-on-surface-variant tracking-wider">
+<span class="text-tertiary-container font-bold">ROOM R0001</span>
+<span>·</span>
+<span>5,000M WORLD FINAL</span>
+</div>
+</div>
+<!-- Center Navigation Links (Exact Match Active State Logic) -->
+<nav class="hidden md:flex items-center space-x-8">
+<a class="text-primary-container border-b-2 border-primary-container font-label-uppercase text-label-uppercase tracking-widest pb-1 transition-colors duration-150" href="#">
+        LIVE TELEMETRY
+      </a>
+<a class="text-on-surface-variant font-label-uppercase text-label-uppercase tracking-widest pb-1 hover:text-primary hover:border-primary-container/60 transition-colors duration-150" href="#">
+        TACTICAL SECTORS
+      </a>
+<a class="text-on-surface-variant font-label-uppercase text-label-uppercase tracking-widest pb-1 hover:text-primary hover:border-primary-container/60 transition-colors duration-150" href="#">
+        STAGE SPLITS
+      </a>
+</nav>
+<!-- Center Standby Badge (Trapezoid HUD Badge) -->
+<div class="flex items-center">
+<div class="px-5 py-1.5 bg-surface-container border border-tertiary-container/50 text-tertiary-container flex items-center space-x-2.5 shadow-[0_0_12px_rgba(255,215,0,0.25)] clip-badge">
+<span class="w-2 h-2 rounded-full bg-tertiary-container animate-ping"></span>
+<span class="font-label-uppercase text-label-uppercase tracking-widest text-tertiary-container">STANDBY</span>
+<span class="font-telemetry-sm text-telemetry-sm font-bold text-tertiary">T-02:45.00</span>
+</div>
+</div>
+<!-- Right Trailing Actions & Primary Action -->
+<div class="flex items-center space-x-4">
+<div class="flex items-center space-x-3 text-on-surface-variant border-r border-outline-variant/40 pr-4">
+<button class="hover:text-primary-container transition-colors duration-150 flex items-center" title="Sensors Link">
+<span class="material-symbols-outlined text-[20px]" data-icon="sensors">sensors</span>
+</button>
+<button class="hover:text-primary-container transition-colors duration-150 flex items-center" title="Mesh Tethering">
+<span class="material-symbols-outlined text-[20px]" data-icon="wifi_tethering">wifi_tethering</span>
+</button>
+<button class="hover:text-primary-container transition-colors duration-150 flex items-center" title="Tactical Tune">
+<span class="material-symbols-outlined text-[20px]" data-icon="tune">tune</span>
+</button>
+</div>
+<!-- Trailing Primary Action from JSON -->
+<div class="flex items-center space-x-2 bg-secondary-container/20 border border-secondary-container px-3 py-1 text-secondary font-label-uppercase text-label-uppercase rounded tracking-wider shadow-[0_0_10px_rgba(212,0,75,0.25)]">
+<span class="w-2 h-2 rounded-full bg-secondary-container animate-pulse"></span>
+<span>E-STOP LINKED</span>
+</div>
+</div>
+</header>
+<!-- ========================================================================= -->
+<!-- 2. MAIN COCKPIT VIEWPORT (Optimized for 10-Inch Landscape Touch Cockpit)    -->
+<!-- ========================================================================= -->
+<main class="relative w-full h-full pt-16 pb-12 px-6 cockpit-grid flex flex-col justify-between overflow-hidden">
+<!-- Perspective Horizon Underlay -->
+<div class="absolute inset-0 perspective-grid pointer-events-none opacity-40 overflow-hidden">
+<div class="w-full h-full tunnel-plane"></div>
+</div>
+<!-- Active Telemetry Section (Behind Popup) -->
+<div class="grid grid-cols-12 gap-6 h-full items-stretch pt-4 z-10">
+<!-- LEFT COL (Span 4): Speed & Pace Circular Dial, Biometrics HUD -->
+<section class="col-span-4 flex flex-col justify-between space-y-4">
+<!-- Speed & Circular Arc Widget -->
+<div class="bg-surface-container/70 border border-outline-variant/40 backdrop-blur-md p-4 relative clip-chamfer-corner shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
+<div class="flex items-center justify-between mb-3">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant tracking-wider">TARGET VELOCITY // BELT</span>
+<span class="font-label-uppercase text-label-uppercase text-primary-container flex items-center space-x-1">
+<span class="inline-block w-1.5 h-1.5 rounded-full bg-primary-container animate-ping"></span>
+<span>CALIBRATED</span>
+</span>
+</div>
+<!-- Circular Arc Graphic with Central Speed -->
+<div class="flex items-center justify-center relative py-2">
+<svg class="w-48 h-48 -rotate-90" viewbox="0 0 120 120">
+<!-- Background Ring -->
+<circle cx="60" cy="60" fill="transparent" r="50" stroke="#1b2027" stroke-width="8"></circle>
+<!-- Active Glow Dial Arc (15.0 km/h position) -->
+<circle class="drop-shadow-[0_0_8px_#00f0ff]" cx="60" cy="60" fill="transparent" r="50" stroke="#00f0ff" stroke-dasharray="314" stroke-dashoffset="110" stroke-linecap="round" stroke-width="8"></circle>
+<!-- Cadence Secondary Arc -->
+<circle cx="60" cy="60" fill="transparent" r="40" stroke="#3b494b" stroke-width="3"></circle>
+<circle cx="60" cy="60" fill="transparent" r="40" stroke="#ffd700" stroke-dasharray="251" stroke-dashoffset="90" stroke-linecap="round" stroke-width="3"></circle>
+</svg>
+<!-- Inner Value Overlay -->
+<div class="absolute inset-0 flex flex-col items-center justify-center text-center">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant">STAGE SPEED</span>
+<span class="font-telemetry-hero text-telemetry-hero font-extrabold text-primary tracking-tight">15.0</span>
+<span class="font-label-uppercase text-label-uppercase text-primary-container -mt-1 font-bold">KM / H</span>
+</div>
+</div>
+<!-- Segmented LED Bar Indicator -->
+<div class="grid grid-cols-10 gap-1 mt-3">
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container shadow-[0_0_6px_#00f0ff]"></div>
+<div class="h-1.5 bg-primary-container/40"></div>
+<div class="h-1.5 bg-outline-variant/30"></div>
+<div class="h-1.5 bg-outline-variant/30"></div>
+<div class="h-1.5 bg-secondary-container/40"></div>
+</div>
+</div>
+<!-- Biometric Pulse & Target Pace Split Card -->
+<div class="bg-surface-container/70 border border-outline-variant/40 backdrop-blur-md p-4 clip-chamfer-corner shadow-[0_4px_16px_rgba(0,0,0,0.5)] flex-1 flex flex-col justify-between">
+<div class="flex items-center justify-between border-b border-outline-variant/30 pb-2">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-secondary-container text-lg" data-icon="favorite">favorite</span>
+<span class="font-label-uppercase text-label-uppercase text-on-surface">ATHLETE BIOMETRIC LINK</span>
+</div>
+<span class="font-label-uppercase text-label-uppercase text-secondary-fixed text-xs px-2 py-0.5 bg-secondary-container/20 border border-secondary-container/50">THRESHOLD</span>
+</div>
+<!-- Live ECG Oscilloscope Visualizer -->
+<div class="py-2">
+<div class="flex items-baseline justify-between">
+<div>
+<span class="font-telemetry-lg text-telemetry-lg text-secondary font-bold">164</span>
+<span class="font-label-uppercase text-label-uppercase text-secondary-fixed-dim ml-1">BPM</span>
+</div>
+<div class="text-right">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant block">TARGET PACE</span>
+<span class="font-telemetry-md text-telemetry-md text-tertiary-container font-bold">04:05 <span class="text-xs">/KM</span></span>
+</div>
+</div>
+<!-- Cardiogram Waveform Line -->
+<div class="w-full h-8 mt-2 relative overflow-hidden flex items-center">
+<svg class="w-full h-full text-secondary-container" preserveaspectratio="none" viewbox="0 0 200 30">
+<path class="drop-shadow-[0_0_6px_#d4004b]" d="M 0,15 L 40,15 L 48,5 L 54,25 L 60,10 L 66,20 L 72,15 L 120,15 L 128,4 L 134,26 L 140,8 L 146,18 L 152,15 L 200,15" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<!-- Bottom Incline & Cadence telemetry mini pills -->
+<div class="grid grid-cols-2 gap-2 pt-2 border-t border-outline-variant/30">
+<div class="bg-surface-container-high/60 p-2 border border-outline-variant/30">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant block">INCLINE</span>
+<span class="font-telemetry-sm text-telemetry-sm text-primary-container font-bold">+1.0% GRADE</span>
+</div>
+<div class="bg-surface-container-high/60 p-2 border border-outline-variant/30">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant block">CADENCE</span>
+<span class="font-telemetry-sm text-telemetry-sm text-tertiary-fixed font-bold">182 SPM</span>
+</div>
+</div>
+</div>
+</section>
+<!-- CENTER COL (Span 5): Tactical duel telemetry & Arena camera framing overlay -->
+<section class="col-span-5 flex flex-col justify-between space-y-4">
+<!-- Dual Face-off Spectator Window / Arena Cam Placeholder Card -->
+<div class="bg-surface-container/70 border border-outline-variant/40 backdrop-blur-md p-4 flex-1 flex flex-col relative clip-chamfer-corner shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
+<div class="flex items-center justify-between border-b border-outline-variant/30 pb-2 mb-3">
+<div class="flex items-center space-x-2">
+<span class="inline-block w-2 h-2 rounded-full bg-secondary-container animate-pulse"></span>
+<span class="font-label-uppercase text-label-uppercase text-primary font-bold">OPTICAL FEED · CONSOLE 03 FOCUS</span>
+</div>
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant text-[10px]">1080P60 // TACTICAL</span>
+</div>
+<!-- Athlete Camera Feed Frame -->
+<div class="relative w-full flex-1 rounded bg-surface-container-lowest overflow-hidden border border-outline-variant/40 group">
+<img class="w-full h-full object-cover opacity-60 mix-blend-luminosity filter contrast-125" data-alt="A focused male Asian elite runner in dark athletic running singlet sprinting on an esports arena treadmill under high-contrast neon cyan and amber cinematic stadium floodlights, dynamic side motion blur, sweat glistening on skin, hyper-detailed broadcast quality." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDrFAlVfG6JzBT_a7H5JS_VsN7DtJ3FcsIfQQJEwecQpmjXxymhcs82BZKYfek9vaNqlrc6s7SUjvCwLeFIRczL0_B541CmAmCHhSZmMPxe0kjqAiiCyURyVxZqHftU1Ze9tpGYdEnfjs-A_zuNA4q6GrccatSmZe0iLdk-eMPCbbtx3zm4JHYFt5Wsqn5rexkric-xNLuleuSO_qAeqfUfil2DWEEnGcpU3HlRi5SNYQ1eY9VNgan9RQvTIw686sfjpKbMR-2UK4lT"/>
+<div class="absolute inset-0 bg-gradient-to-t from-surface-container-lowest via-transparent to-transparent"></div>
+<!-- Tactical Crosshair & Corner Marks -->
+<div class="absolute top-2 left-2 w-3 h-3 border-t-2 border-l-2 border-primary-container"></div>
+<div class="absolute top-2 right-2 w-3 h-3 border-t-2 border-r-2 border-primary-container"></div>
+<div class="absolute bottom-2 left-2 w-3 h-3 border-b-2 border-l-2 border-primary-container"></div>
+<div class="absolute bottom-2 right-2 w-3 h-3 border-b-2 border-r-2 border-primary-container"></div>
+<!-- Cam HUD Meta Overlay -->
+<div class="absolute bottom-3 left-3 flex items-center space-x-3">
+<span class="bg-surface-container-lowest/80 border border-outline-variant/60 px-2 py-0.5 font-label-uppercase text-label-uppercase text-tertiary-container">
+                LANE 01: ALEX CHEN (USA)
+              </span>
+<span class="font-telemetry-sm text-telemetry-sm text-primary font-bold">PACE: 03:02</span>
+</div>
+</div>
+<!-- Bottom Telemetry Quick Presets Bar -->
+<div class="mt-3 flex items-center justify-between bg-surface-container-lowest/70 p-2 border border-outline-variant/30">
+<span class="font-label-uppercase text-label-uppercase text-on-surface-variant">TACTILE PRESETS</span>
+<div class="flex items-center space-x-2">
+<button class="px-3 py-1 bg-surface-container-high hover:bg-surface-bright border border-outline-variant font-telemetry-sm text-telemetry-sm font-bold text-on-surface transition-colors active:scale-95">14.0</button>
+<button class="px-3 py-1 bg-surface-container-high hover:bg-surface-bright border border-outline-variant font-telemetry-sm text-telemetry-sm font-bold text-on-surface transition-colors active:scale-95">16.0</button>
+<button class="px-3 py-1 bg-primary-container/20 border border-primary-container font-telemetry-sm text-telemetry-sm font-bold text-primary-container shadow-[0_0_8px_#00f0ff] active:scale-95">18.0</button>
+<button class="px-3 py-1 bg-surface-container-high hover:bg-surface-bright border border-outline-variant font-telemetry-sm text-telemetry-sm font-bold text-secondary transition-colors active:scale-95">20.0</button>
+</div>
+</div>
+</div>
+</section>
+<!-- RIGHT COL (Span 3): Heat Roster, Runners Roster Status -->
+<section class="col-span-3 flex flex-col justify-between space-y-4">
+<div class="bg-surface-container/70 border border-outline-variant/40 backdrop-blur-md p-4 flex-1 flex flex-col clip-chamfer-corner shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
+<div class="flex items-center justify-between border-b border-outline-variant/30 pb-2 mb-3">
+<div class="flex items-center space-x-2">
+<span class="font-label-uppercase text-label-uppercase text-on-surface font-bold">HEAT GRID ROSTER</span>
+</div>
+<span class="font-label-uppercase text-label-uppercase text-primary-container bg-primary-container/10 px-2 py-0.5 border border-primary-container/30">
+              6 / 8 READY
+            </span>
+</div>
+<!-- Roster Runners List -->
+<div class="space-y-2 flex-1 overflow-hidden">
+<!-- Lane 1 -->
+<div class="flex items-center justify-between p-2 bg-surface-container-low border border-outline-variant/20 hover:border-primary-container/40 transition-colors">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-outline font-bold">L1</span>
+<span class="font-body-md text-body-md text-on-surface font-semibold text-sm">A. Chen</span>
+<span class="text-xs text-on-surface-variant font-label-uppercase">USA</span>
+</div>
+<span class="text-xs font-label-uppercase text-primary-container">READY</span>
+</div>
+<!-- Lane 2 -->
+<div class="flex items-center justify-between p-2 bg-surface-container-low border border-outline-variant/20">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-outline font-bold">L2</span>
+<span class="font-body-md text-body-md text-on-surface font-semibold text-sm">M. Wertans</span>
+<span class="text-xs text-on-surface-variant font-label-uppercase">FRA</span>
+</div>
+<span class="text-xs font-label-uppercase text-primary-container">READY</span>
+</div>
+<!-- Lane 3 (Newly Joined Target Highlighted) -->
+<div class="flex items-center justify-between p-2 bg-primary-container/15 border-2 border-primary-container shadow-[0_0_12px_rgba(0,240,255,0.3)]">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-primary-container font-extrabold">L3</span>
+<span class="font-body-md text-body-md text-primary font-bold text-sm">E. Kipchoge</span>
+<span class="text-xs text-tertiary-container font-label-uppercase">KEN</span>
+</div>
+<span class="text-[10px] font-label-uppercase text-background bg-primary-container px-1.5 py-0.5 font-bold animate-pulse">
+                + NEW
+              </span>
+</div>
+<!-- Lane 4 -->
+<div class="flex items-center justify-between p-2 bg-surface-container-low border border-outline-variant/20">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-outline font-bold">L4</span>
+<span class="font-body-md text-body-md text-on-surface font-semibold text-sm">L. Coudoux</span>
+<span class="text-xs text-on-surface-variant font-label-uppercase">FRA</span>
+</div>
+<span class="text-xs font-label-uppercase text-primary-container">READY</span>
+</div>
+<!-- Lane 5 & 6 -->
+<div class="flex items-center justify-between p-2 bg-surface-container-low border border-outline-variant/20">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-outline font-bold">L5</span>
+<span class="font-body-md text-body-md text-on-surface font-semibold text-sm">D. Bekele</span>
+<span class="text-xs text-on-surface-variant font-label-uppercase">ETH</span>
+</div>
+<span class="text-xs font-label-uppercase text-primary-container">READY</span>
+</div>
+<!-- Lane 7 & 8 Open Slots -->
+<div class="flex items-center justify-between p-2 bg-surface-container-lowest/50 border border-dashed border-outline-variant/40 opacity-70">
+<div class="flex items-center space-x-2">
+<span class="font-telemetry-sm text-telemetry-sm text-outline-variant font-bold">L7</span>
+<span class="font-body-md text-body-md text-outline font-semibold text-sm">SEARCHING...</span>
+</div>
+<span class="text-[10px] font-label-uppercase text-outline animate-pulse">AWAITING</span>
+</div>
+</div>
+<!-- Tactical Kiosk Tab Switcher -->
+<div class="grid grid-cols-3 gap-1 pt-3 border-t border-outline-variant/30 mt-2">
+<button class="py-1 text-center font-label-uppercase text-[10px] bg-primary-container text-on-primary-container font-bold">ACTIVE</button>
+<button class="py-1 text-center font-label-uppercase text-[10px] bg-surface-container-high text-on-surface-variant hover:text-on-surface">LEADER</button>
+<button class="py-1 text-center font-label-uppercase text-[10px] bg-surface-container-high text-on-surface-variant hover:text-on-surface">RADAR</button>
+</div>
+</div>
+</section>
+</div>
+<!-- ========================================================================= -->
+<!-- BOTTOM COMPETITION TRACK BAR: Linear 5,000M Race Progress Lane Visualizer -->
+<!-- ========================================================================= -->
+<div class="w-full bg-surface-container/90 border-t border-outline-variant/40 px-6 py-2.5 flex items-center justify-between z-20 shadow-[0_-4px_16px_rgba(0,0,0,0.4)]">
+<!-- Left Track Details -->
+<div class="flex items-center space-x-4 w-44">
+<span class="material-symbols-outlined text-primary-container text-xl" data-icon="flag">flag</span>
+<div>
+<span class="font-label-uppercase text-[10px] text-on-surface-variant block tracking-wider">STAGE LENGTH</span>
+<span class="font-telemetry-sm text-telemetry-sm text-primary font-bold">5,000 METERS</span>
+</div>
+</div>
+<!-- Linear Stage Progression Bar with 8 Runner Lanes -->
+<div class="flex-1 px-8 relative">
+<div class="h-4 w-full bg-surface-container-lowest border border-outline-variant/50 rounded-sm relative flex items-center">
+<!-- Distance Markers -->
+<span class="absolute left-0 -top-4 font-label-uppercase text-[9px] text-outline">0M (START)</span>
+<span class="absolute left-1/4 -top-4 font-label-uppercase text-[9px] text-outline">1,250M</span>
+<span class="absolute left-1/2 -top-4 font-label-uppercase text-[9px] text-outline">2,500M</span>
+<span class="absolute left-3/4 -top-4 font-label-uppercase text-[9px] text-outline">3,750M</span>
+<span class="absolute right-0 -top-4 font-label-uppercase text-[9px] text-tertiary-container font-bold">FINISH // 5,000M</span>
+<!-- Grid tick lines inside track -->
+<div class="w-full h-full flex justify-between px-2 items-center opacity-30">
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+<div class="h-2 w-px bg-outline"></div>
+</div>
+<!-- Start Grid Stacked Athlete Position Dots (All at Start Grid in Standby) -->
+<div class="absolute left-2 flex items-center space-x-1.5">
+<div class="w-2.5 h-2.5 rounded-full bg-primary-container border border-surface-container-lowest" title="Lane 1"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-primary-container border border-surface-container-lowest" title="Lane 2"></div>
+<!-- Lane 3: Kipchoge Pulsing Gold/Cyan Indicator -->
+<div class="w-3.5 h-3.5 rounded-full bg-tertiary-container border-2 border-primary-container shadow-[0_0_10px_#ffd700] animate-radar flex items-center justify-center" title="Lane 3 (NEW)">
+<span class="w-1 h-1 bg-surface-container-lowest rounded-full"></span>
+</div>
+<div class="w-2.5 h-2.5 rounded-full bg-primary-container border border-surface-container-lowest" title="Lane 4"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-primary-container border border-surface-container-lowest" title="Lane 5"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-primary-container border border-surface-container-lowest" title="Lane 6"></div>
+</div>
+<!-- Ghost / Record Pace Benchmark Beacon -->
+<div class="absolute right-8 top-1/2 -translate-y-1/2 flex items-center space-x-1">
+<span class="material-symbols-outlined text-[14px] text-tertiary-container" data-icon="sports_score">sports_score</span>
+<span class="font-label-uppercase text-[9px] text-tertiary-container">WR 12:35.36</span>
+</div>
+</div>
+</div>
+<!-- Right Link Status Indicator -->
+<div class="flex items-center space-x-3 w-48 justify-end">
+<div class="text-right">
+<span class="font-label-uppercase text-[10px] text-on-surface-variant block">RF LATENCY</span>
+<span class="font-telemetry-sm text-telemetry-sm text-primary-container font-bold">12ms · ULTRA</span>
+</div>
+<span class="inline-block w-3 h-3 rounded-full bg-primary-container shadow-[0_0_8px_#00f0ff] animate-pulse"></span>
+</div>
+</div>
+<!-- ========================================================================= -->
+<!-- 3. CENTRAL FLOATING ESPORTS POPUP NOTIFICATION: "NEW ATHLETE JOINED HEAT"  -->
+<!-- ========================================================================= -->
+<div class="absolute inset-0 z-40 bg-surface-container-lowest/70 backdrop-blur-md flex items-center justify-center p-6">
+<!-- Pop-up Modal Container with Chamfered Tactical Esports Aesthetics -->
+<div class="relative w-full max-w-3xl bg-surface-container-low/95 border-2 border-primary-container shadow-[0_0_50px_rgba(0,240,255,0.35),inset_0_1px_2px_rgba(255,255,255,0.4)] clip-chamfer-corner overflow-hidden transition-all duration-300">
+<!-- Cybernetic Corner Graphic Brackets -->
+<div class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-tertiary-container z-30 pointer-events-none"></div>
+<div class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-tertiary-container z-30 pointer-events-none"></div>
+<div class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-tertiary-container z-30 pointer-events-none"></div>
+<div class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-tertiary-container z-30 pointer-events-none"></div>
+<!-- Laser Flare Sweep Scanline Overlay -->
+<div class="absolute top-0 left-0 w-1/3 h-full bg-gradient-to-r from-transparent via-primary-container/20 to-transparent skew-x-12 animate-laser pointer-events-none z-20"></div>
+<!-- Modal Top Bar -->
+<div class="px-6 py-3.5 bg-surface-container-lowest/90 border-b border-primary-container/40 flex items-center justify-between relative z-10">
+<div class="flex items-center space-x-3">
+<span class="flex h-3 w-3 relative">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-container opacity-75"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-primary-container shadow-[0_0_10px_#00f0ff]"></span>
+</span>
+<span class="font-label-uppercase text-label-uppercase tracking-widest text-primary-container font-extrabold flex items-center space-x-1.5">
+<span>⚡</span>
+<span>NEW CHALLENGER JOINED HEAT</span>
+</span>
+</div>
+<div class="flex items-center space-x-2 font-label-uppercase text-label-uppercase">
+<span class="text-tertiary-container font-bold">6 / 8 ATHLETES READY</span>
+<span class="text-outline-variant">·</span>
+<span class="text-secondary font-semibold">2 SLOTS OPEN</span>
+</div>
+</div>
+<!-- Modal Body: Competitor Card Layout -->
+<div class="p-6 relative z-10 grid grid-cols-12 gap-6 items-center">
+<!-- Athlete Headshot Circular Avatar (Using Specified Image Asset from User) -->
+<div class="col-span-4 flex flex-col items-center justify-center">
+<div class="relative w-36 h-36 rounded-full p-1.5 bg-gradient-to-tr from-primary-container via-tertiary-container to-primary-container shadow-[0_0_24px_rgba(0,240,255,0.45)] group">
+<!-- Circular Athlete Headshot Image -->
+<div class="w-full h-full rounded-full overflow-hidden bg-surface-container-lowest border-2 border-surface-container-lowest">
+<img class="w-full h-full object-cover object-top scale-105" data-alt="Intense close-up portrait of elite marathon runner Eliud Kipchoge running under dramatic evening mountain rim lighting, high-contrast sweat on skin, race bib number 341 pinned to black athletics vest, intense competitive grit, ultra-photorealistic sports portrait." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBy86Z7E1A8m-Zh1y_2w_37hSWHFEOfzVhTtEy2nQ1BuT4l5QnePrhkLfzLF3kN8YhjyvDDH3IwlFk1Wzt_T2DemCCzUlLPQmEQWPa28g7f4VORTG8dB-AUpKModOgys86vkOU9KnlW_rx91ARVjWjSRWpvRVbRk5PZmzVanXRv_F5YseAdlkAB72iFBbde66nc73mQc1QUPuRBY6SbYAyHbb8OECfMcmWISRRFMCP4qvVjcbJ96XurlHXpQbQ4QmTwItIG1pEu95KG"/>
+</div>
+<!-- Animated Concentric Ring Halo -->
+<div class="absolute -inset-2 rounded-full border border-primary-container/40 border-dashed animate-spin" style="animation-duration: 20s;"></div>
+<!-- Lane Badge floating over avatar bottom -->
+<div class="absolute -bottom-2 bg-tertiary-container text-on-tertiary-fixed font-telemetry-sm text-telemetry-sm font-extrabold px-3 py-0.5 rounded-full shadow-[0_0_12px_#ffd700]">
+                LANE 03
+              </div>
+</div>
+<!-- Machine Link Status -->
+<div class="mt-4 flex items-center space-x-1.5 bg-surface-container px-3 py-1 border border-outline-variant/40 rounded-full">
+<span class="w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_#00f0ff] animate-pulse"></span>
+<span class="font-label-uppercase text-[10px] text-on-surface-variant font-semibold">TREADMILL CONSOLE #03</span>
+</div>
+</div>
+<!-- Athlete Bio & Biometric PR Matrix -->
+<div class="col-span-8 flex flex-col justify-between space-y-4">
+<!-- Country & Name Title -->
+<div>
+<div class="flex items-center space-x-2 mb-1">
+<span class="font-label-uppercase text-label-uppercase text-tertiary-container font-extrabold tracking-wider bg-tertiary-container/10 border border-tertiary-container/30 px-2 py-0.5">
+                  KENYA 🇰🇪 · EAST AFRICA ATHLETICS
+                </span>
+<span class="font-label-uppercase text-label-uppercase text-primary-container text-xs">WORLD CLASS TIER</span>
+</div>
+<h2 class="font-headline-lg text-headline-lg font-extrabold text-primary tracking-tight leading-none mt-1">
+                ELIUD KIPCHOGE
+              </h2>
+<p class="font-body-md text-body-md text-on-surface-variant text-sm mt-0.5">
+                Marathon World Record Holder · 5,000M Olympic Finalist
+              </p>
+</div>
+<!-- Key Stats / PR Matrix Bento Grid -->
+<div class="grid grid-cols-3 gap-2 bg-surface-container-lowest/80 p-3 border border-outline-variant/40 rounded">
+<!-- 5KM PR -->
+<div class="border-r border-outline-variant/30 pr-2">
+<span class="font-label-uppercase text-[10px] text-on-surface-variant block tracking-wider">5KM PR</span>
+<span class="font-telemetry-md text-telemetry-md font-bold text-tertiary-container">14:15.0</span>
+<span class="font-label-uppercase text-[9px] text-primary-container block mt-0.5">PACE 02:51 /KM</span>
+</div>
+<!-- TARGET PACE -->
+<div class="border-r border-outline-variant/30 px-2">
+<span class="font-label-uppercase text-[10px] text-on-surface-variant block tracking-wider">PROJECTED PACE</span>
+<span class="font-telemetry-md text-telemetry-md font-bold text-primary">02:50.4</span>
+<span class="font-label-uppercase text-[9px] text-on-surface-variant block mt-0.5">SPLIT DELTA: -0.8s</span>
+</div>
+<!-- VO2 PEAK -->
+<div class="pl-2">
+<span class="font-label-uppercase text-[10px] text-on-surface-variant block tracking-wider">VO2 PEAK</span>
+<span class="font-telemetry-md text-telemetry-md font-bold text-secondary">84.2</span>
+<span class="font-label-uppercase text-[9px] text-secondary-fixed-dim block mt-0.5">ML/KG/MIN</span>
+</div>
+</div>
+<!-- Machine Calibrations & Tactical Deck -->
+<div class="flex items-center justify-between text-xs text-on-surface-variant font-label-uppercase">
+<div class="flex items-center space-x-3">
+<span class="flex items-center space-x-1">
+<span class="material-symbols-outlined text-sm text-primary-container" data-icon="speed">speed</span>
+<span>SYNCED: 21.2 KM/H MAX</span>
+</span>
+<span class="flex items-center space-x-1">
+<span class="material-symbols-outlined text-sm text-tertiary-container" data-icon="network_check">network_check</span>
+<span>DUAL-LINK: 0% LOSS</span>
+</span>
+</div>
+<span class="text-tertiary-container font-bold animate-pulse">WARM-UP COMPLETE</span>
+</div>
+</div>
+</div>
+<!-- Interactive Tactile Action Bottom Row -->
+<div class="px-6 py-3 bg-surface-container-high/80 border-t border-outline-variant/40 flex items-center justify-between relative z-10">
+<!-- Auto-dismiss Ticker Bar -->
+<div class="flex items-center space-x-3 w-1/2">
+<span class="font-label-uppercase text-[11px] text-on-surface-variant font-semibold">AUTO-DISMISS</span>
+<div class="flex-1 h-1.5 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/40">
+<div class="h-full bg-primary-container animate-countdown-bar shadow-[0_0_8px_#00f0ff]"></div>
+</div>
+<span class="font-telemetry-sm text-[11px] text-primary-container font-bold">4.2s</span>
+</div>
+<!-- Kiosk Actions Buttons -->
+<div class="flex items-center space-x-3">
+<button class="px-4 py-2 bg-surface-container hover:bg-surface-bright border border-outline-variant text-on-surface font-label-uppercase text-label-uppercase tracking-wider transition-all duration-150 active:scale-95 flex items-center space-x-1.5">
+<span class="material-symbols-outlined text-sm" data-icon="close">close</span>
+<span>DISMISS</span>
+</button>
+<button class="px-5 py-2 bg-primary-container text-on-primary-container hover:bg-primary font-label-uppercase text-label-uppercase font-extrabold tracking-wider transition-all duration-150 shadow-[0_0_16px_rgba(0,240,255,0.4)] active:scale-95 flex items-center space-x-2">
+<span class="material-symbols-outlined text-sm" data-icon="visibility">visibility</span>
+<span>TAP TO VIEW PROFILE</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</main>
+</body></html>

@@ -39,6 +39,12 @@ struct TokenInfo {
     avatar_url: Option<String>,
     device_id: String,
     role: Role,
+    lane: Option<u32>,
+    tier: Option<String>,
+    bio: Option<String>,
+    pr5k: Option<String>,
+    target_pace: Option<String>,
+    vo2_max: Option<f32>,
 }
 
 struct Room {
@@ -182,6 +188,12 @@ struct TokenReq {
     avatar_url: Option<String>,
     device_id: Option<String>,
     role: Option<Role>,
+    lane: Option<u32>,
+    tier: Option<String>,
+    bio: Option<String>,
+    pr5k: Option<String>,
+    target_pace: Option<String>,
+    vo2_max: Option<f32>,
 }
 
 /// 大廳：列出所有房間與其狀態，選手端據此決定哪些比賽可以報名。
@@ -236,6 +248,7 @@ async fn issue_token(
             Json(json!({ "error": "ROOM_NOT_FOUND" })),
         ))?;
 
+        let mut assigned_lane = req.lane;
         let is_existing = if let Some(existing) = room.runners.get(&runner_id) {
             if existing.device_id != device_id {
                 return Err((
@@ -243,6 +256,7 @@ async fn issue_token(
                     Json(json!({ "error": "RUNNER_ID_IN_USE" })),
                 ));
             }
+            assigned_lane = existing.lane;
             true
         } else {
             // 新報名：檢查房間狀態
@@ -283,26 +297,84 @@ async fn issue_token(
                 ));
             }
 
+            if assigned_lane.is_none() {
+                let used_lanes: std::collections::HashSet<u32> = rooms
+                    .get(&room_id)
+                    .map(|r| r.runners.values().filter_map(|runner| runner.lane).collect())
+                    .unwrap_or_default();
+                assigned_lane = (1..=100).find(|l| !used_lanes.contains(l));
+            }
+
             // 新增選手到房間（原子操作，不 drop 鎖）
             if let Some(r) = rooms.get_mut(&room_id) {
-                r.runners.insert(
-                    runner_id.clone(),
-                    RunnerState {
-                        runner_id: runner_id.clone(),
-                        name: name.clone(),
-                        country: req.country.clone(),
-                        bib: req.bib.clone(),
-                        avatar_url: req.avatar_url.clone(),
-                        device_id: device_id.to_string(),
-                        distance: 0.0,
-                        pace: "--'--\"".to_string(),
-                        speed_kmh: 0.0,
-                        cadence: 0,
-                        finish_time_ms: None,
-                    },
-                );
+                let runner_state = RunnerState {
+                    runner_id: runner_id.clone(),
+                    name: name.clone(),
+                    country: req.country.clone(),
+                    bib: req.bib.clone(),
+                    avatar_url: req.avatar_url.clone(),
+                    device_id: device_id.to_string(),
+                    distance: 0.0,
+                    pace: "--'--\"".to_string(),
+                    speed_kmh: 0.0,
+                    cadence: 0,
+                    finish_time_ms: None,
+                    lane: assigned_lane,
+                    tier: req.tier.clone(),
+                    bio: req.bio.clone(),
+                    pr5k: req.pr5k.clone(),
+                    target_pace: req.target_pace.clone(),
+                    vo2_max: req.vo2_max,
+                };
+                r.runners.insert(runner_id.clone(), runner_state);
+
+                let field_size = r.runners.len();
+                let capacity = r.capacity;
+                let joined_msg = ServerMsg::RunnerJoined {
+                    room_id: room_id.clone(),
+                    runner_id: runner_id.clone(),
+                    name: name.clone(),
+                    country: req.country.clone(),
+                    bib: req.bib.clone(),
+                    avatar_url: req.avatar_url.clone(),
+                    lane: assigned_lane,
+                    device_id: Some(device_id.to_string()),
+                    field_size,
+                    capacity,
+                    tier: req.tier.clone(),
+                    bio: req.bio.clone(),
+                    pr5k: req.pr5k.clone(),
+                    target_pace: req.target_pace.clone(),
+                    vo2_max: req.vo2_max,
+                    server_time: now,
+                };
+                if let Ok(payload) = serde_json::to_string(&joined_msg) {
+                    let _ = r.tx.send(payload);
+                }
             }
         }
+
+        let token = format!("{:032x}", rand::random::<u128>());
+        st.tokens.lock().unwrap().insert(
+            token.clone(),
+            TokenInfo {
+                room_id: room_id.clone(),
+                runner_id,
+                name,
+                country: req.country,
+                bib: req.bib,
+                avatar_url: req.avatar_url,
+                device_id: device_id_opt.unwrap_or_default(),
+                role,
+                lane: assigned_lane,
+                tier: req.tier,
+                bio: req.bio,
+                pr5k: req.pr5k,
+                target_pace: req.target_pace,
+                vo2_max: req.vo2_max,
+            },
+        );
+        Ok(Json(json!({ "token": token, "roomId": room_id })))
     } else {
         // DISPLAY token：房間必須存在
         let rooms = st.rooms.lock().unwrap();
@@ -310,23 +382,30 @@ async fn issue_token(
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "ROOM_NOT_FOUND" })),
         ))?;
-    }
+        drop(rooms);
 
-    let token = format!("{:032x}", rand::random::<u128>());
-    st.tokens.lock().unwrap().insert(
-        token.clone(),
-        TokenInfo {
-            room_id: room_id.clone(),
-            runner_id,
-            name,
-            country: req.country,
-            bib: req.bib,
-            avatar_url: req.avatar_url,
-            device_id: device_id_opt.unwrap_or_default(),
-            role,
-        },
-    );
-    Ok(Json(json!({ "token": token, "roomId": room_id })))
+        let token = format!("{:032x}", rand::random::<u128>());
+        st.tokens.lock().unwrap().insert(
+            token.clone(),
+            TokenInfo {
+                room_id: room_id.clone(),
+                runner_id,
+                name,
+                country: req.country,
+                bib: req.bib,
+                avatar_url: req.avatar_url,
+                device_id: device_id_opt.unwrap_or_default(),
+                role,
+                lane: None,
+                tier: None,
+                bio: None,
+                pr5k: None,
+                target_pace: None,
+                vo2_max: None,
+            },
+        );
+        Ok(Json(json!({ "token": token, "roomId": room_id })))
+    }
 }
 
 /// 排程起跑（§3.2）：T_start = ServerNow + 5000ms，並重置上一場成績。
@@ -750,6 +829,12 @@ async fn ws_upgrade(
                 speed_kmh: 0.0,
                 cadence: 0,
                 finish_time_ms: None,
+                lane: info.lane,
+                tier: info.tier.clone(),
+                bio: info.bio.clone(),
+                pr5k: info.pr5k.clone(),
+                target_pace: info.target_pace.clone(),
+                vo2_max: info.vo2_max,
             },
         )
     };

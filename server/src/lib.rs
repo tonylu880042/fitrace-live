@@ -56,6 +56,7 @@ pub struct RankEntry {
     pub gap_to_leader_ms: Option<i64>,
     /// 落後前一名的時間，演算方式同上。
     pub gap_to_ahead_ms: Option<i64>,
+    pub lane: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +94,25 @@ pub enum ServerMsg {
     RaceClosed { room_id: String, closed_at_server_time: i64, reason: String },
     #[serde(rename = "RACE_CANCELLED", rename_all = "camelCase")]
     RaceCancelled { room_id: String },
+    #[serde(rename = "RUNNER_JOINED", rename_all = "camelCase")]
+    RunnerJoined {
+        room_id: String,
+        runner_id: String,
+        name: String,
+        country: Option<String>,
+        bib: Option<String>,
+        avatar_url: Option<String>,
+        lane: Option<u32>,
+        device_id: Option<String>,
+        field_size: usize,
+        capacity: Option<u32>,
+        tier: Option<String>,
+        bio: Option<String>,
+        pr5k: Option<String>,
+        target_pace: Option<String>,
+        vo2_max: Option<f32>,
+        server_time: i64,
+    },
 }
 
 /// 伺服器保存的選手最新狀態。
@@ -110,6 +130,12 @@ pub struct RunnerState {
     pub speed_kmh: f32,
     pub cadence: u16,
     pub finish_time_ms: Option<i64>,
+    pub lane: Option<u32>,
+    pub tier: Option<String>,
+    pub bio: Option<String>,
+    pub pr5k: Option<String>,
+    pub target_pace: Option<String>,
+    pub vo2_max: Option<f32>,
 }
 
 impl RunnerState {
@@ -205,6 +231,7 @@ pub fn rank(runners: &[RunnerState], race_distance_m: f64, closed: bool) -> Vec<
                 RunnerStatus::Waiting
             },
             finish_time_ms: r.finish_time_ms,
+            lane: r.lane,
         })
         .collect()
 }
@@ -274,6 +301,12 @@ mod tests {
             speed_kmh: 15.0,
             cadence: 180,
             finish_time_ms: finish,
+            lane: None,
+            tier: None,
+            bio: None,
+            pr5k: None,
+            target_pace: None,
+            vo2_max: None,
         }
     }
 
@@ -417,5 +450,52 @@ mod tests {
     fn pace_formatting_matches_protocol() {
         assert_eq!(format_pace(15.0), "04'00\"");
         assert_eq!(format_pace(0.0), "--'--\"");
+    }
+
+    #[test]
+    fn runner_joined_serialization_and_deserialization() {
+        let msg = ServerMsg::RunnerJoined {
+            room_id: "R0001".to_string(),
+            runner_id: "R_ELIUD".to_string(),
+            name: "Eliud Kipchoge".to_string(),
+            country: Some("KE".to_string()),
+            bib: Some("03".to_string()),
+            avatar_url: Some("https://example.com/avatar.jpg".to_string()),
+            lane: Some(3),
+            device_id: Some("treadmill-03".to_string()),
+            field_size: 6,
+            capacity: Some(8),
+            tier: Some("WORLD CLASS TIER".to_string()),
+            bio: Some("Marathon World Record Holder".to_string()),
+            pr5k: Some("14:15.0".to_string()),
+            target_pace: Some("02:50.4".to_string()),
+            vo2_max: Some(84.2),
+            server_time: 1700000000000,
+        };
+        let json_str = serde_json::to_string(&msg).unwrap();
+        assert!(json_str.contains("\"type\":\"RUNNER_JOINED\""));
+        assert!(json_str.contains("\"roomId\":\"R0001\""));
+        assert!(json_str.contains("\"runnerId\":\"R_ELIUD\""));
+        assert!(json_str.contains("\"name\":\"Eliud Kipchoge\""));
+        assert!(json_str.contains("\"lane\":3"));
+        assert!(json_str.contains("\"fieldSize\":6"));
+        assert!(json_str.contains("\"capacity\":8"));
+        assert!(json_str.contains("\"vo2Max\":84.2"));
+
+        let de: ServerMsg = serde_json::from_str(&json_str).unwrap();
+        match de {
+            ServerMsg::RunnerJoined {
+                room_id, runner_id, name, lane, field_size, capacity, vo2_max, ..
+            } => {
+                assert_eq!(room_id, "R0001");
+                assert_eq!(runner_id, "R_ELIUD");
+                assert_eq!(name, "Eliud Kipchoge");
+                assert_eq!(lane, Some(3));
+                assert_eq!(field_size, 6);
+                assert_eq!(capacity, Some(8));
+                assert_eq!(vo2_max, Some(84.2));
+            }
+            _ => panic!("Expected ServerMsg::RunnerJoined"),
+        }
     }
 }
