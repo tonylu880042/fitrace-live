@@ -2,18 +2,31 @@ package com.fitrace.runner
 
 import android.app.Application
 import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import java.util.Locale
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import java.util.UUID
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.res.painterResource
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -30,13 +43,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -48,13 +61,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -69,6 +92,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import kotlin.math.abs
 import kotlin.math.max
@@ -83,17 +107,10 @@ private val Coral = Color(0xFFFF2D4F)
 private val Amber = Color(0xFFFF8C1A)
 private val Gold = Color(0xFFFFD700)
 private val Label = Color(0xFF9BB0B8)
-private val Hair = Color(0xFF1B3742)
 
 private val Grotesk = FontFamily(
     Font(R.font.space_grotesk_medium, FontWeight.Medium),
     Font(R.font.space_grotesk_bold, FontWeight.Bold),
-)
-
-// 設計系統指定：數值與標籤一律 JetBrains Mono（等寬，高頻刷新不跳動）
-private val Mono = FontFamily(
-    Font(R.font.jetbrains_mono_medium, FontWeight.Medium),
-    Font(R.font.jetbrains_mono_bold, FontWeight.Bold),
 )
 
 private const val SPEED_MAX_KMH = 25f
@@ -148,10 +165,30 @@ data class RaceUiState(
     val cutoffAtServerTime: Long? = null,
     val dnf: Boolean = false,
     val closed: Boolean = false,
+    /** 自己在最新榜單中的相鄰對手資訊（名次提示用） */
+    val standing: Standing? = null,
+    /** 名次提示狀態機（見 RaceTension） */
+    val tension: Tension = Tension(),
 ) {
     /** 可以離開回大廳：尚未發令，或自己已完賽，或比賽已關閉。比賽中不給一鍵離開，免得誤觸。 */
     val canLeave: Boolean get() = startAtServerTime == null || finishTimeMs != null || closed
+
+    /** 只有比賽進行中才能調速：已過發令時間、自己未完賽、比賽未關閉（DNF 必然已關閉）。 */
+    fun canAdjustSpeed(serverNow: Long): Boolean =
+        startAtServerTime != null && serverNow >= startAtServerTime && finishTimeMs == null && !closed
+
+    /** 已報名進入比賽畫面、但還沒發令（等待排程或倒數中）；比賽已關閉則不算。 */
+    fun inPreRace(serverNow: Long): Boolean =
+        screen == Screen.RACE && roomId.isNotEmpty() && !closed &&
+            (startAtServerTime == null || serverNow < startAtServerTime)
 }
+
+/**
+ * 伺服器在每次（重）連線時都會補發 RACE_SCHEDULED。起跑時間與目前這場相同，就是同一場的重播。
+ * 新的起跑時間（例如主辦方重新排程）才算新的一場。
+ */
+fun isReplayOfCurrentRace(currentStartAt: Long?, scheduledStartAt: Long): Boolean =
+    currentStartAt != null && currentStartAt == scheduledStartAt
 
 class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listener {
 
@@ -212,7 +249,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     fun enterLobby(profile: Profile) {
         saveProfileToPrefs(profile)
-        // 在大廳就接上跑步機，選手等發令前可以先熱身
+        // 在大廳就接上跑步機，讓選手看到連線狀態；發令前皮帶一律停住，見 onMetric()
         treadmill.connect()
         _state.value = _state.value.copy(screen = Screen.LOBBY, profile = profile, lobbyNotice = null)
         main.removeCallbacks(lobbyPoll)
@@ -295,6 +332,8 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     fun serverNow(): Long = client?.serverNow() ?: System.currentTimeMillis()
 
     fun nudgeSpeed(delta: Float) {
+        // UI 已停用按鈕，這裡再擋一次，避免倒數最後一瞬間的點擊漏過去
+        if (!_state.value.canAdjustSpeed(serverNow())) return
         val target = (_state.value.targetSpeed + delta).coerceIn(0f, SPEED_MAX_KMH)
         treadmill.setTargetSpeed(target)
         _state.value = _state.value.copy(targetSpeed = target)
@@ -304,6 +343,10 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         lastMetric = metric
         val s = _state.value
         if (!engine.isArmed) {
+            // 不開放熱身：先跑起來的人發令時是帶速起跑，對靜止起跑的人不公平。
+            // app 的速度鍵已鎖，這裡再擋機台實體按鍵——只在已報名、發令前（inPreRace）皮帶一動就下令歸零；大廳、個人檔案、完賽後緩跑都不干預。
+            // 用 inPreRace 而非 isArmed 判斷，避免發令瞬間 arm() 還沒執行就把剛起步的皮帶停掉。
+            if (metric.speedKmh > 0.1f && s.inPreRace(serverNow())) treadmill.setTargetSpeed(0f)
             _state.value = s.copy(
                 speedKmh = metric.speedKmh, cadence = metric.cadence, incline = metric.incline,
                 beltStatus = metric.status,
@@ -327,6 +370,8 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             pace = sample.pace,
             cadence = sample.cadence,
             finishTimeMs = sample.finishTimeMs,
+            // 撞線當下就收起名次提示，不等下一筆榜單
+            tension = if (sample.justFinished) RaceTension.next(s.tension, null, false, serverNow()) else s.tension,
         )
     }
 
@@ -350,7 +395,12 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     }
 
     override fun onConnectionChanged(connected: Boolean) {
-        _state.value = _state.value.copy(serverConnected = connected)
+        val s = _state.value
+        // 重連後的第一筆榜單只當基準：斷線期間的名次變化不算超越
+        _state.value = s.copy(
+            serverConnected = connected,
+            tension = if (connected) RaceTension.onReconnect(s.tension) else s.tension,
+        )
     }
 
     override fun onClockSynced(offsetMs: Long, rttMs: Long) {
@@ -370,6 +420,12 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     }
 
     override fun onRaceScheduled(startAtServerTime: Long, raceDistanceM: Double, cutoffAtServerTime: Long?) {
+        // 每次（重）連線伺服器都會補發 RACE_SCHEDULED。同一個起跑時間就是同一場的重播：
+        // 不可歸零距離、清掉完賽成績或重新 arm()，否則 Wi-Fi 一斷，選手的距離就從 0 重來
+        if (isReplayOfCurrentRace(_state.value.startAtServerTime, startAtServerTime)) {
+            _state.value = _state.value.copy(raceDistanceM = raceDistanceM, cutoffAtServerTime = cutoffAtServerTime)
+            return
+        }
         _state.value = _state.value.copy(
             startAtServerTime = startAtServerTime,
             raceDistanceM = raceDistanceM,
@@ -389,12 +445,15 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     override fun onLeaderboard(entries: List<RaceClient.Entry>) {
         val sorted = entries.sortedBy { it.rank }
+        val runnerId = _state.value.profile.runnerId
+        val now = serverNow()
+        val standing = standingOf(sorted, runnerId)
+        val tension = RaceTension.next(_state.value.tension, standing, _state.value.canAdjustSpeed(now), now)
         // 完賽後名次已定，差距凍結在撞線當下；否則其他人繼續跑會讓「領先幅度」一路縮到 0
         if (_state.value.finishTimeMs != null) {
-            _state.value = _state.value.copy(fieldSize = sorted.size)
+            _state.value = _state.value.copy(fieldSize = sorted.size, tension = tension)
             return
         }
-        val runnerId = _state.value.profile.runnerId
         val myIndex = sorted.indexOfFirst { it.runnerId == runnerId }
         val me = sorted.getOrNull(myIndex)
         // 領先者看的是對第 2 名的領先幅度，其餘人看的是對前一名的落後幅度
@@ -411,11 +470,15 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             closingOnLeader = if (gapToLeader != null && previous != null &&
                 kotlin.math.abs(gapToLeader - previous) >= 1.0
             ) gapToLeader < previous else null,
+            standing = standing,
+            tension = tension,
         )
     }
 
     override fun onRaceClosed(reason: String) {
-        _state.value = _state.value.copy(closed = true)
+        _state.value = _state.value.copy(closed = true).let {
+            it.copy(tension = RaceTension.next(it.tension, null, active = false, nowMs = serverNow()))
+        }
         // 未完賽的情況下比賽被關閉，標記為 DNF 並凍結距離
         if (_state.value.finishTimeMs == null) {
             treadmill.setTargetSpeed(0f)
@@ -468,38 +531,48 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
     var name by remember { mutableStateOf(initial.name) }
     var country by remember { mutableStateOf(initial.country) }
 
-    Column(
-        Modifier.fillMaxSize().background(Carbon).padding(horizontal = 64.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
-    ) {
-        Text(
-            "FitRace", color = Color.White, fontSize = 44.sp, fontFamily = Grotesk,
-            fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic,
-        )
-        Text("ATHLETE PROFILE", color = Label, fontSize = 13.sp, fontFamily = Mono, letterSpacing = 2.sp)
-        Spacer(Modifier.height(8.dp))
-        listOf(
-            Triple("伺服器", host) { v: String -> host = v },
-            Triple("選手 ID", id) { v: String -> id = v },
-            Triple("姓名", name) { v: String -> name = v },
-            Triple("國碼 (ISO 兩碼)", country) { v: String -> country = v },
-        ).forEach { (label, value, set) ->
-            OutlinedTextField(
-                value = value, onValueChange = set, label = { Text(label) },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Button(
-            onClick = { vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase())) },
-            colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Carbon),
-            shape = RoundedCornerShape(4.dp),
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+    BoxWithConstraints(Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop() }) {
+        val k = min(maxWidth.value / 1280f, maxHeight.value / 800f)
+        Box(
+            Modifier.align(Alignment.TopStart).padding(start = (36 * k).dp).height((84 * k).dp),
+            contentAlignment = Alignment.CenterStart,
+        ) { FitRaceLogo(k) }
+
+        Column(
+            Modifier.align(Alignment.Center).width((560 * k).dp).glass(k)
+                .padding(horizontal = (40 * k).dp, vertical = (32 * k).dp),
+            verticalArrangement = Arrangement.spacedBy((12 * k).dp),
         ) {
+            SoftLabel("ATHLETE PROFILE", Cyan, k, 15f)
             Text(
-                "ENTER RACE LOBBY", fontSize = 18.sp, fontFamily = Mono,
-                fontWeight = FontWeight.Bold, letterSpacing = 2.sp,
+                "Ready to race?", color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
+                fontSize = (30 * k).sp, letterSpacing = (-0.4 * k).sp,
             )
+            Spacer(Modifier.height((4 * k).dp))
+            val shape = RoundedCornerShape((14 * k).dp)
+            val colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                focusedBorderColor = Cyan, unfocusedBorderColor = Color.White.copy(alpha = .16f),
+                focusedLabelColor = Cyan, unfocusedLabelColor = Label, cursorColor = Cyan,
+                focusedContainerColor = Cyan.copy(alpha = .05f), unfocusedContainerColor = Color.White.copy(alpha = .03f),
+            )
+            listOf(
+                Triple("伺服器", host) { v: String -> host = v },
+                Triple("選手 ID", id) { v: String -> id = v },
+                Triple("姓名", name) { v: String -> name = v },
+                Triple("國碼 (ISO 兩碼)", country) { v: String -> country = v },
+            ).forEach { (label, value, set) ->
+                OutlinedTextField(
+                    value = value, onValueChange = set,
+                    label = { Text(label, fontFamily = Grotesk, fontWeight = FontWeight.Medium) },
+                    textStyle = TextStyle(fontFamily = Grotesk, fontWeight = FontWeight.Medium, fontSize = (17 * k).sp),
+                    singleLine = true, shape = shape, colors = colors, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height((8 * k).dp))
+            PrimaryPill("ENTER RACE LOBBY", k) {
+                vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+            }
         }
     }
 }
@@ -507,8 +580,7 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
 /* ─────────────────────────── 競速 HUD ─────────────────────────── */
 
 /**
- * 版面依 Stitch 專案 17741436539835090440 的
- * "FitRace 10-Inch Treadmill Athlete Cockpit HUD" 實作。
+ * 霓虹儀表風格：柔光弧線、玻璃卡片、圓潤的 Space Grotesk 等寬數字（tnum，高頻刷新不跳動）。
  * 以 1280x800 為基準等比縮放，換機台解析度不需重排版。
  */
 @Composable
@@ -518,435 +590,910 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
         while (true) { now = vm.serverNow(); delay(50) }
     }
     val startAt = s.startAtServerTime
-    val remain = if (startAt != null) startAt - now else null
-    val counting = remain != null && remain > 0
+    val phase = countdownPhase(startAt, now)
+    // 倒數與名次提示共用同一組 TTS／ToneGenerator；進 HUD 就初始化，槍響前引擎已暖好
+    val context = LocalContext.current
+    val audio = remember { CountdownAudio(context.applicationContext) }
+    DisposableEffect(audio) { onDispose { audio.release() } }
+    CountdownSounds(phase, audio)
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(Carbon)) {
+    BoxWithConstraints(
+        Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop() }
+    ) {
         val k = min(maxWidth.value / 1280f, maxHeight.value / 800f)
 
-        Column(
-            Modifier.fillMaxSize().padding(
-                start = (14 * k).dp, end = (14 * k).dp, top = (14 * k).dp, bottom = (30 * k).dp,
-            )
-        ) {
-            CockpitTopBar(s, now, startAt, counting, remain, k) { vm.leaveToLobby() }
-            Spacer(Modifier.height((12 * k).dp))
-            Row(Modifier.weight(1f).fillMaxWidth()) {
-                TelemetryPanel(s, vm, k, Modifier.weight(1.95f).fillMaxHeight())
-                Spacer(Modifier.width((12 * k).dp))
-                CompetitiveMatrix(s, etaText(s, now), k, Modifier.weight(1f).fillMaxHeight())
+        Column(Modifier.fillMaxSize().padding(start = (36 * k).dp, end = (36 * k).dp, bottom = (26 * k).dp)) {
+            TopBar(s, now, startAt, phase, k) { vm.leaveToLobby() }
+            Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                PaceDial(s, k)
+                Spacer(Modifier.weight(1f))
+                SpeedRing(s, now, k)
+                Spacer(Modifier.weight(1f))
+                Column {
+                    LeaderboardCard(s, k)
+                    Spacer(Modifier.height((16 * k).dp))
+                    SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+                }
             }
-            Spacer(Modifier.height((12 * k).dp))
-            StageDistance(s, k)
+            CompetitionTrack(s, k)
         }
+
+        // 倒數與安全鑰匙警示疊在提示卡之上，出現時提示卡也讓位
+        PositionAlerts(s, now, blocked = phase != CountdownPhase.None || s.safetyKeyDetached, audio, k)
+
+        if (startAt != null && phase != CountdownPhase.None) CountdownOverlay(phase, startAt, now, k)
 
         if (s.safetyKeyDetached) {
             Box(
-                Modifier.align(Alignment.Center).clip(RoundedCornerShape((6 * k).dp))
-                    .background(Color(0xEB1A0A12)).border((2 * k).dp, Coral, RoundedCornerShape((6 * k).dp))
-                    .padding(horizontal = (40 * k).dp, vertical = (24 * k).dp)
-            ) {
-                Text(
-                    "SAFETY KEY DETACHED", color = Coral, fontFamily = Mono,
-                    fontWeight = FontWeight.Bold, fontSize = (34 * k).sp, letterSpacing = (3 * k).sp,
+                Modifier.align(Alignment.Center).glass(k, Coral.copy(alpha = .6f), Color(0xCC1A0A12))
+                    .padding(horizontal = (48 * k).dp, vertical = (28 * k).dp)
+            ) { Glow("SAFETY KEY DETACHED", Coral, k, 40f) }
+        }
+    }
+}
+
+/* ── 名次提示 ── */
+
+/** 提示卡／晶片要畫的內容。 */
+private class AlertLook(val tag: String, val title: String, val chip: String, val sub: String, val color: Color, val image: Int)
+
+private fun fmtGap(m: Double?, ms: Long?): String =
+    "${m?.let { abs(it).roundToInt().toString() } ?: "--"} m · ${ms?.let { "%.1f".format(it / 1000.0) } ?: "--"} s"
+
+/** 狀態卡的文字用即時榜單數字；事件卡用觸發當下的名次。 */
+private fun alertLook(state: TensionState?, popup: TensionPopup?, st: Standing?): AlertLook? {
+    val event = popup?.event
+    val from = popup?.fromRank
+    val to = popup?.toRank
+    val moved = if (from != null && to != null) abs(from - to) else 1
+    val positions = if (moved == 1) "POSITION" else "POSITIONS"
+    return when {
+        event == TensionEvent.OVERTAKE -> AlertLook(
+            "OVERTAKE", "+$moved $positions", "+$moved $positions", "P$from → P$to", Cyan, R.drawable.pict_overtake,
+        )
+        event == TensionEvent.OVERTAKEN -> AlertLook(
+            "POSITION LOST", "−$moved $positions", "−$moved $positions", "P$from → P$to", Coral, R.drawable.pict_closing,
+        )
+        event == TensionEvent.BECAME_LEADER || state == TensionState.LEADING -> AlertLook(
+            "YOU ARE LEADING", "LEADING", "LEADING",
+            "+${st?.behindGapM?.let { abs(it).roundToInt() } ?: "--"} m over P${st?.behindRank ?: 2}", Gold, R.drawable.pict_leading,
+        )
+        state == TensionState.CLOSING_IN -> AlertLook(
+            "WATCH OUT", "P${st?.behindRank ?: "-"} CLOSING IN", "P${st?.behindRank ?: "-"} CLOSING IN",
+            "${fmtGap(st?.behindGapM, st?.behindGapMs)} behind you", Coral, R.drawable.pict_closing,
+        )
+        state == TensionState.CATCHING -> AlertLook(
+            "ALMOST THERE", "CATCHING P${st?.aheadRank ?: "-"}", "CATCHING P${st?.aheadRank ?: "-"}",
+            "${fmtGap(st?.aheadGapM, st?.aheadGapMs)} ahead", Cyan, R.drawable.pict_catching,
+        )
+        else -> null
+    }
+}
+
+/** 彈卡時念的話；被超越不出聲。 */
+private fun alertWord(p: TensionPopup): String? = when (p.event) {
+    TensionEvent.OVERTAKE -> "Overtake!"
+    TensionEvent.BECAME_LEADER -> "You're in the lead!"
+    TensionEvent.OVERTAKEN -> null
+    null -> when (p.state) {
+        TensionState.CLOSING_IN -> "Watch out!"
+        TensionState.CATCHING -> "Go get them!"
+        else -> null
+    }
+}
+
+private const val ALERT_IN_MS = 320
+private const val ALERT_HOLD_MS = 2200L
+private const val ALERT_OUT_MS = 380
+
+/**
+ * 名次提示：進入狀態或發生事件時（已過冷卻）在速度環上方彈出中央卡，停約 2.2 秒後收起，
+ * 之後以速度環下方的小晶片持續顯示目前狀態，回到 NONE 時淡出。
+ * 全部不攔截觸控；倒數與安全鑰匙警示出現時讓位。
+ */
+@Composable
+private fun BoxScope.PositionAlerts(s: RaceUiState, now: Long, blocked: Boolean, audio: CountdownAudio, k: Float) {
+    val visible = s.canAdjustSpeed(now) && !blocked
+    val popup = s.tension.popup
+    val card = remember { Animatable(0f) }
+    var shown by remember { mutableStateOf<TensionPopup?>(null) }
+    var handledSeq by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(popup?.seq) {
+        val p = popup ?: return@LaunchedEffect
+        handledSeq = p.seq
+        // 重新組合（例如回到 HUD）時不重播舊卡
+        if (System.currentTimeMillis() + s.clockOffsetMs - p.atMs > 2_000L && shown == null) return@LaunchedEffect
+        shown = p
+        alertWord(p)?.let { audio.say(it) }
+        // 從目前的透明度接著放大淡入：前一張還在畫面上時不會先閃掉再出現
+        card.animateTo(1f, tween(ALERT_IN_MS, easing = FastOutSlowInEasing))
+        delay(ALERT_HOLD_MS)
+        card.animateTo(0f, tween(ALERT_OUT_MS, easing = FastOutSlowInEasing))
+        shown = null
+    }
+
+    val cardPopup = shown
+    val cardLook = cardPopup?.let { alertLook(it.state, it, s.standing) }
+    if (visible && cardLook != null) {
+        Box(
+            Modifier.align(Alignment.Center).graphicsLayer {
+                val t = card.value
+                val sc = .82f + .18f * t
+                scaleX = sc; scaleY = sc; alpha = t
+            }
+        ) { AlertCard(cardLook, k) }
+    }
+
+    // 中央卡收起後才顯示晶片，兩者不同時出現
+    val state = s.tension.state
+    val lastChip = remember { arrayOf<AlertLook?>(null) }
+    alertLook(state, null, s.standing)?.let { lastChip[0] = it }
+    // 新卡即將彈出（LaunchedEffect 下一幀才接手）時也先收起晶片，免得兩者同時出現
+    val cardPending = cardPopup != null || (popup != null && popup.seq != handledSeq)
+    val chipOn = visible && state != TensionState.NONE && !cardPending
+    val chipAlpha by animateFloatAsState(if (chipOn) 1f else 0f, tween(300), label = "chip")
+    val chipLook = lastChip[0]
+    if (chipAlpha > 0.01f && chipLook != null && !cardPending) {
+        Box(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = (172 * k).dp)
+                .graphicsLayer { alpha = chipAlpha }
+        ) { AlertChip(chipLook, k) }
+    }
+}
+
+@Composable
+private fun AlertCard(look: AlertLook, k: Float) = Column(
+    // 寬度留到右側榜單卡之前（1280 基準下榜單從 x≈905 起）
+    Modifier.width((520 * k).dp).height((360 * k).dp)
+        // 卡片蓋在速度環的大字上：多墊一層深底，否則底下的數字會透出來干擾標題
+        .clip(RoundedCornerShape((26 * k).dp)).background(Carbon.copy(alpha = .85f))
+        .glass(k, look.color.copy(alpha = .55f), radius = 26f)
+        // 柔和的內光暈：由邊緣往內、首尾相接的同色細環，透明度平滑遞減（不重疊才不會出現條紋）
+        .drawBehind {
+            val r = 26f * k
+            val band = 3f * k
+            val steps = 14
+            for (i in 0 until steps) {
+                val inset = band / 2f + i * band
+                val f = 1f - i / steps.toFloat()
+                drawRoundRect(
+                    look.color.copy(alpha = .10f * f * f),
+                    Offset(inset, inset), Size(size.width - inset * 2f, size.height - inset * 2f),
+                    CornerRadius(max(0f, r - inset)), style = Stroke(band),
                 )
             }
         }
+        .padding(horizontal = (28 * k).dp, vertical = (20 * k).dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+) {
+    SoftLabel(look.tag, Label, k, 14f)
+    Spacer(Modifier.height((6 * k).dp))
+    Box(
+        Modifier.height((180 * k).dp).fillMaxWidth()
+            .drawBehind { ambient(look.color.copy(alpha = .22f), center, size.minDimension * .75f) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(painterResource(look.image), contentDescription = null, modifier = Modifier.fillMaxHeight())
+    }
+    Spacer(Modifier.height((6 * k).dp))
+    Glow(look.title, look.color, k, 44f)
+    Spacer(Modifier.height((4 * k).dp))
+    Text(
+        look.sub, maxLines = 1,
+        style = TextStyle(
+            color = Color(0xFFDCE8EC), fontFamily = Grotesk, fontWeight = FontWeight.Medium,
+            fontSize = (20 * k).sp, fontFeatureSettings = "tnum",
+        ),
+    )
+}
+
+@Composable
+private fun AlertChip(look: AlertLook, k: Float) = Row(
+    Modifier.glass(k, look.color.copy(alpha = .5f), radius = 50f)
+        .padding(start = (10 * k).dp, end = (20 * k).dp, top = (5 * k).dp, bottom = (5 * k).dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Image(painterResource(look.image), contentDescription = null, modifier = Modifier.height((34 * k).dp))
+    Spacer(Modifier.width((10 * k).dp))
+    Glow(look.chip, look.color, k, 20f)
+}
+
+/* ── 起跑倒數 ── */
+
+/**
+ * 全螢幕倒數：暗幕上巨大的金色秒數（每秒放大淡入）、逐秒流失的細光環，槍響後青色 GO! 放大淡出。
+ * 倒數中吞掉觸控（此時速度鈕本來就鎖著）；GO! 階段不攔截，消失後更不會擋到任何東西。
+ */
+@Composable
+private fun CountdownOverlay(phase: CountdownPhase, startAt: Long, now: Long, k: Float) {
+    when (phase) {
+        is CountdownPhase.Counting -> {
+            val secs = phase.secondsLeft
+            val pop = remember { Animatable(0f) }
+            val ring = remember { Animatable(1f) }
+            LaunchedEffect(secs) {
+                // 這一秒還剩多少：一般是整秒，中途加入時是零頭
+                val left = (startAt - now - (secs - 1) * 1000L).coerceIn(0L, 1000L)
+                ring.snapTo(left / 1000f)
+                launch { ring.animateTo(0f, tween(left.toInt(), easing = LinearEasing)) }
+                pop.snapTo(0f)
+                pop.animateTo(1f, tween(380, easing = FastOutSlowInEasing))
+            }
+            Box(
+                Modifier.fillMaxSize().background(Carbon.copy(alpha = .7f))
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.size((440 * k).dp).drawBehind {
+                            ambient(Gold.copy(alpha = .12f), center, size.minDimension * .5f)
+                            val r = size.minDimension / 2f - 24f * k
+                            drawCircle(Color.White.copy(alpha = .07f), r, style = Stroke(3f * k))
+                            glowArc(Gold, -90f, 360f * ring.value, r, 5f * k)
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val t = pop.value
+                        Box(Modifier.graphicsLayer {
+                            val sc = 1.4f - .4f * t
+                            // 逐筆調整透明度、不開離屏圖層：否則大字的柔光會被圖層邊界切成方塊
+                            compositingStrategy = CompositingStrategy.ModulateAlpha
+                            scaleX = sc; scaleY = sc; alpha = t
+                        }) { Glow("$secs", Gold, k, 300f) }
+                    }
+                    Spacer(Modifier.height((8 * k).dp))
+                    SoftLabel("GET SET", Label, k, 30f)
+                }
+            }
+        }
+        CountdownPhase.Go -> {
+            val out = remember { Animatable(0f) }
+            LaunchedEffect(Unit) {
+                // 中途加入時從目前進度接著播，讓 GO! 仍在槍響後 1.2 秒消失
+                val p0 = ((now - startAt).toFloat() / GO_PHASE_MS).coerceIn(0f, 1f)
+                out.snapTo(p0)
+                out.animateTo(1f, tween(((1f - p0) * GO_PHASE_MS).toInt(), easing = LinearEasing))
+            }
+            val t = out.value
+            Box(
+                Modifier.fillMaxSize().background(Carbon.copy(alpha = .7f * (1f - t))),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.graphicsLayer {
+                    val sc = 1f + .6f * t
+                    // 逐筆調整透明度、不開離屏圖層：否則大字的柔光會被圖層邊界切成方塊
+                            compositingStrategy = CompositingStrategy.ModulateAlpha
+                            scaleX = sc; scaleY = sc; alpha = 1f - t
+                }) { Glow("GO!", Cyan, k, 300f) }
+            }
+        }
+        CountdownPhase.None -> Unit
+    }
+}
+
+/**
+ * 倒數音效：每進入新的一秒以人聲念秒數（Five…One），槍響喊「Go!」。
+ * 只在階段改變時觸發，50ms 的時間刷新或重組都不會重播。Hud 只在 RACE 畫面組合，離開即釋放。
+ */
+@Composable
+private fun CountdownSounds(phase: CountdownPhase, audio: CountdownAudio) {
+    val prev = remember { arrayOf<CountdownPhase>(CountdownPhase.None) }
+    LaunchedEffect(phase) {
+        countdownBeep(prev[0], phase)?.let { audio.cue(it, countdownWord(phase)) }
+        prev[0] = phase
+    }
+}
+
+/**
+ * 起跑人聲（平台 TextToSpeech）加嗶聲備援（平台 ToneGenerator），都不需素材或依賴。
+ * 人聲與嗶聲不同時播，免得糊在一起。只要 TTS 不能用就改嗶，選手一定聽得到起跑：
+ * 尚未初始化完成、沒有引擎、語言缺資料、speak() 失敗，或引擎事後回報 onError（之後整場改用嗶聲）。
+ * 所有呼叫包在 runCatching：音效失敗不可影響比賽。
+ */
+private class CountdownAudio(context: Context) {
+    private val main = Handler(Looper.getMainLooper())
+    // ponytail: 部分機型建構 ToneGenerator 會丟例外，拿不到就安靜
+    private val tone = runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 100) }.getOrNull()
+    /** 只有 onInit 成功且語言可用後才為 true；在那之前的秒數一律以嗶聲代替 */
+    @Volatile private var voiceReady = false
+    private var tts: TextToSpeech? = null
+
+    init {
+        tts = runCatching { TextToSpeech(context) { status -> main.post { onInit(status) } } }
+            .onFailure { Log.w(TAG, "TTS construct failed", it) }.getOrNull()
+    }
+
+    private fun onInit(status: Int) {
+        runCatching {
+            val t = tts ?: return
+            Log.i(TAG, "TTS onInit status=$status (SUCCESS=${TextToSpeech.SUCCESS}) defaultEngine=${t.defaultEngine} engines=${t.engines.map { it.name }}")
+            if (status != TextToSpeech.SUCCESS) return
+            var lang = t.setLanguage(Locale.US)
+            Log.i(TAG, "setLanguage(US)=$lang (MISSING_DATA=${TextToSpeech.LANG_MISSING_DATA} NOT_SUPPORTED=${TextToSpeech.LANG_NOT_SUPPORTED})")
+            if (lang < TextToSpeech.LANG_AVAILABLE) {
+                lang = t.setLanguage(Locale.getDefault())
+                Log.i(TAG, "setLanguage(${Locale.getDefault()})=$lang")
+            }
+            t.setSpeechRate(1.1f)
+            t.setPitch(1.15f)
+            t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String) { Log.i(TAG, "utterance onStart $id") }
+                override fun onDone(id: String) { Log.i(TAG, "utterance onDone $id") }
+                @Deprecated("Deprecated in Java")
+                override fun onError(id: String) = onError(id, -1)
+                override fun onError(id: String, errorCode: Int) {
+                    Log.w(TAG, "utterance onError $id code=$errorCode")
+                    if (id == WARMUP_ID || id.startsWith(ALERT_ID)) return
+                    // 人聲沒出來：這一聲補嗶，之後整場改用嗶聲
+                    main.post {
+                        voiceReady = false
+                        beep(if (id.startsWith("LONG")) CountdownBeep.LONG else CountdownBeep.SHORT)
+                    }
+                }
+            })
+            voiceReady = lang >= TextToSpeech.LANG_AVAILABLE
+            Log.i(TAG, "TTS ready=$voiceReady voice=${t.voice?.name}")
+            // 暖機：第一句合成要約 700ms，會被下一秒的 QUEUE_FLUSH 截斷；先靜音念一次，之後約 30ms 出聲
+            if (voiceReady) {
+                val r = t.speak("Go", TextToSpeech.QUEUE_FLUSH, Bundle().apply {
+                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+                    putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0f)
+                }, WARMUP_ID)
+                Log.i(TAG, "warmup speak=$r")
+            }
+        }.onFailure { Log.w(TAG, "TTS setup failed", it) }
+    }
+
+    fun cue(kind: CountdownBeep, word: String) {
+        if (voiceReady && speak(kind, word)) return
+        Log.i(TAG, "cue '$word' -> beep $kind (voiceReady=$voiceReady)")
+        beep(kind)
+    }
+
+    /** 名次提示的人聲：只在 TTS 可用時念，不用嗶聲代替（比賽中的嗶聲會跟倒數混淆）。 */
+    fun say(word: String) {
+        if (voiceReady) speak(null, word)
+    }
+
+    private fun speak(kind: CountdownBeep?, word: String): Boolean = runCatching {
+        val params = Bundle().apply {
+            putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f)
+        }
+        // QUEUE_FLUSH：念得慢也不會拖到下一秒
+        val r = tts?.speak(word, TextToSpeech.QUEUE_FLUSH, params, "${kind?.name ?: ALERT_ID}-$word")
+        Log.i(TAG, "speak('$word')=$r")
+        r == TextToSpeech.SUCCESS
+    }.getOrDefault(false)
+
+    private fun beep(kind: CountdownBeep) {
+        runCatching {
+            when (kind) {
+                CountdownBeep.SHORT -> tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                CountdownBeep.LONG -> tone?.startTone(ToneGenerator.TONE_PROP_BEEP2, 600)
+            }
+        }
+    }
+
+    fun release() {
+        voiceReady = false
+        main.removeCallbacksAndMessages(null)
+        runCatching { tts?.shutdown() }
+        runCatching { tone?.release() }
+        tts = null
+    }
+
+    private companion object {
+        const val TAG = "FitRaceGo"
+        const val WARMUP_ID = "warmup"
+        const val ALERT_ID = "ALERT"
     }
 }
 
 /* ── 頂列 ── */
 
 @Composable
-private fun CockpitTopBar(
-    s: RaceUiState, now: Long, startAt: Long?, counting: Boolean, remain: Long?, k: Float,
+private fun TopBar(
+    s: RaceUiState, now: Long, startAt: Long?, phase: CountdownPhase, k: Float,
     onLeave: () -> Unit,
-) = Row(
-    Modifier.fillMaxWidth().height((58 * k).dp).padding(horizontal = (6 * k).dp),
-    verticalAlignment = Alignment.CenterVertically,
-) {
-    Box(Modifier.width((5 * k).dp).height((26 * k).dp).background(Cyan))
-    Spacer(Modifier.width((10 * k).dp))
-    // 與大螢幕同一套字標處理：斜體粗體 Space Grotesk
-    Text(
-        "FitRace", color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
-        fontStyle = FontStyle.Italic, fontSize = (30 * k).sp, letterSpacing = (-0.6 * k).sp,
-    )
-    Spacer(Modifier.width((14 * k).dp))
-    Box(Modifier.width((1 * k).dp).height((22 * k).dp).background(Hair))
-    Spacer(Modifier.width((14 * k).dp))
-    MonoLabel("%,dM RACE // %s".format(s.raceDistanceM.roundToInt(), s.roomId.replace('_', ' ')), Color.White, k, 13f)
-    Spacer(Modifier.width((22 * k).dp))
-    LinkStatus("TREADMILL LINK", if (s.treadmillConnected) beltStatusText(s.beltStatus) else "OFFLINE", s.treadmillConnected, k)
-    Spacer(Modifier.width((20 * k).dp))
-    LinkStatus("RACE SERVER", if (s.serverConnected) "RTT ${s.rttMs}MS" else "RECONNECTING", s.serverConnected, k)
-    // 顯示 CUTOFF 計時器（正在比賽且有截止時間）
-    if (s.startAtServerTime != null && s.finishTimeMs == null && !s.closed && s.cutoffAtServerTime != null) {
-        val cutoffRemain = max(0L, s.cutoffAtServerTime - now)
-        Spacer(Modifier.width((20 * k).dp))
-        MonoLabel("CUTOFF ${fmtClock(cutoffRemain)}", Label, k, 12f)
-    }
-    Spacer(Modifier.weight(1f))
-    if (s.canLeave) {
+) = Box(Modifier.fillMaxWidth().height((84 * k).dp)) {
+    Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+        FitRaceLogo(k)
         Box(
-            Modifier.clip(RoundedCornerShape((4 * k).dp))
-                .border((1 * k).dp, Label, RoundedCornerShape((4 * k).dp))
-                .clickable(onClick = onLeave)
-                .padding(horizontal = (16 * k).dp, vertical = (13 * k).dp),
-        ) { MonoLabel("◀ LOBBY", Color.White, k, 13f) }
-        Spacer(Modifier.width((12 * k).dp))
+            Modifier.padding(horizontal = (16 * k).dp).width((1 * k).dp).height((22 * k).dp)
+                .background(Color.White.copy(alpha = .18f))
+        )
+        SoftLabel(
+            "ROOM ${s.roomId.replace('_', ' ')}  ·  %,dm".format(s.raceDistanceM.roundToInt()),
+            Color.White.copy(alpha = .8f), k, 18f,
+        )
     }
+
+    // 中央梯形頁籤：狀態 + 比賽計時
     Row(
-        Modifier.clip(RoundedCornerShape((4 * k).dp)).background(Color(0xFF101C24))
-            .border((1 * k).dp, Hair, RoundedCornerShape((4 * k).dp))
-            .padding(horizontal = (16 * k).dp, vertical = (7 * k).dp),
+        Modifier.align(Alignment.TopCenter).height((72 * k).dp)
+            .drawBehind {
+                val slant = 40f * k
+                val tab = Path().apply {
+                    moveTo(0f, 0f); lineTo(size.width, 0f)
+                    lineTo(size.width - slant, size.height); lineTo(slant, size.height); close()
+                }
+                drawPath(tab, Brush.verticalGradient(listOf(Color.White.copy(alpha = .03f), Color.White.copy(alpha = .08f))))
+                drawPath(tab, Color.White.copy(alpha = .14f), style = Stroke(1.2f * k))
+            }
+            .padding(horizontal = (72 * k).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MonoLabel(
+        val counting = phase is CountdownPhase.Counting
+        SoftLabel(
             when {
                 s.dnf -> "DNF"
                 startAt == null -> "STANDBY"
                 counting -> "GET SET"
                 s.finishTimeMs != null -> "FINISHED"
-                else -> "ELAPSED"
-            }, Label, k, 13f,
+                else -> "RUNNING RACE"
+            }, Label, k, 18f,
         )
-        Spacer(Modifier.width((12 * k).dp))
-        Text(
+        Spacer(Modifier.width((14 * k).dp))
+        Glow(
             when {
-                s.dnf -> "%,dM".format(s.distance.roundToInt())
+                s.dnf -> "%,dm".format(s.distance.roundToInt())
                 startAt == null -> "--:--"
-                counting -> "T-${(remain!! / 1000) + 1}"
+                phase is CountdownPhase.Counting -> "T-${phase.secondsLeft}"
                 s.finishTimeMs != null -> fmtClock(s.finishTimeMs - startAt)
                 else -> fmtClock(now - startAt)
             },
-            color = if (s.dnf) Coral else if (counting || s.finishTimeMs != null) Gold else Cyan,
-            fontFamily = Mono, fontWeight = FontWeight.Bold,
-            fontSize = (32 * k).sp, letterSpacing = (-1 * k).sp,
+            if (s.dnf) Coral else if (counting || s.finishTimeMs != null) Gold else Color.White,
+            k, 34f, glow = counting || s.finishTimeMs != null,
         )
     }
-}
 
-@Composable
-private fun LinkStatus(label: String, value: String, ok: Boolean, k: Float) =
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size((7 * k).dp).clip(RoundedCornerShape(50)).background(if (ok) Cyan else Coral))
+    Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+        // 截止倒數只在比賽中出現，此時不顯示離開鈕，右側有空間
+        if (startAt != null && s.finishTimeMs == null && !s.closed && s.cutoffAtServerTime != null) {
+            SoftLabel("CUTOFF ${fmtClock(max(0L, s.cutoffAtServerTime - now)).substringBefore('.')}", Label, k, 15f)
+            Spacer(Modifier.width((20 * k).dp))
+        }
+        StatusDot("BELT", s.treadmillConnected, k)
+        Spacer(Modifier.width((14 * k).dp))
+        StatusDot(if (s.serverConnected) "${s.rttMs}ms" else "OFFLINE", s.serverConnected, k)
+        Spacer(Modifier.width((26 * k).dp))
+        SoftLabel("INCLINE", Label, k, 18f)
         Spacer(Modifier.width((8 * k).dp))
-        MonoLabel("$label:", Label, k, 12f)
-        Spacer(Modifier.width((6 * k).dp))
-        MonoLabel(value, if (ok) Cyan else Coral, k, 12f)
-    }
-
-private fun beltStatusText(status: BeltStatus) = status.name
-
-/* ── 左側遙測面板 ── */
-
-@Composable
-private fun TelemetryPanel(s: RaceUiState, vm: RaceViewModel, k: Float, modifier: Modifier) =
-    Column(modifier.panel(k).padding((20 * k).dp)) {
-        Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { SpeedArc(s, k) }
-            Column(
-                Modifier.width((312 * k).dp),
-                verticalArrangement = Arrangement.spacedBy((16 * k).dp),
-            ) {
-                MetricCard("CURRENT PACE", "MIN / KM", fmtPace(s.pace), Cyan, true, k)
-                MetricCard("STRIDE CADENCE", "SPM", "${s.cadence}", Color.White, false, k)
-                MetricCard("MOTOR INCLINE", "% GRADE", "%+.1f".format(s.incline), Color.White, false, k)
-            }
-        }
-        Spacer(Modifier.height((12 * k).dp))
-        Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Hair))
-        Spacer(Modifier.height((10 * k).dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            MonoLabel("BELT: ${beltStatusText(s.beltStatus)}", Cyan, k, 12f)
-            Spacer(Modifier.weight(1f))
-            MonoLabel("TARGET SPEED: %.1f KM/H".format(s.targetSpeed), Label, k, 12f)
-            Spacer(Modifier.width((12 * k).dp))
-            NudgeButton("−", k) { vm.nudgeSpeed(-0.5f) }
-            Spacer(Modifier.width((8 * k).dp))
-            NudgeButton("+", k) { vm.nudgeSpeed(0.5f) }
+        Glow("%.1f%%".format(s.incline), Color.White, k, 26f, glow = false)
+        if (s.canLeave) {
+            Spacer(Modifier.width((20 * k).dp))
+            Box(
+                Modifier.clip(RoundedCornerShape(50))
+                    .border((1 * k).dp, Color.White.copy(alpha = .25f), RoundedCornerShape(50))
+                    .clickable(onClick = onLeave)
+                    .padding(horizontal = (18 * k).dp, vertical = (9 * k).dp),
+            ) { SoftLabel("‹ LOBBY", Color.White, k, 15f) }
         }
     }
 
-@Composable
-private fun SpeedArc(s: RaceUiState, k: Float) {
-    val frac = (s.speedKmh / SPEED_MAX_KMH).coerceIn(0f, 1f)
-    Box(Modifier.size((300 * k).dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) {
-            dottedRing(Color(0xFF2B4450), 46, 8f * k)
-            speedArc(Color(0xFF223540), 1f, 14f * k)
-            speedArc(Cyan, frac, 14f * k)
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            MonoLabel("CURRENT BELT SPEED", Label, k, 12f)
-            Spacer(Modifier.height((4 * k).dp))
-            Text(
-                "%.1f".format(s.speedKmh), color = Cyan, fontFamily = Mono,
-                fontWeight = FontWeight.Bold, fontSize = (76 * k).sp, letterSpacing = (-3 * k).sp,
-            )
-            Text(
-                "KM/H", color = Color.White, fontFamily = Mono,
-                fontWeight = FontWeight.Bold, fontSize = (24 * k).sp, letterSpacing = (3 * k).sp,
-            )
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(
-    title: String, unit: String, value: String, valueColor: Color, accent: Boolean, k: Float,
-) = Row(
-    Modifier.fillMaxWidth().height((92 * k).dp)
-        .clip(RoundedCornerShape((4 * k).dp))
-        .background(Color(0xFF111B22))
-        .border((1 * k).dp, if (accent) Cyan.copy(alpha = .55f) else Hair, RoundedCornerShape((4 * k).dp)),
-    verticalAlignment = Alignment.CenterVertically,
-) {
-    Box(Modifier.width((4 * k).dp).fillMaxHeight().background(if (accent) Cyan else Color(0xFF2B4450)))
-    Column(Modifier.padding(start = (16 * k).dp)) {
-        MonoLabel(title, Label, k, 12f)
-        Spacer(Modifier.height((3 * k).dp))
-        Text(
-            unit, color = Color.White, fontFamily = Mono,
-            fontWeight = FontWeight.Bold, fontSize = (20 * k).sp, letterSpacing = (1 * k).sp,
+    Box(
+        Modifier.align(Alignment.BottomCenter).fillMaxWidth().height((1 * k).dp).background(
+            Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .14f), Color.Transparent))
         )
-    }
-    Spacer(Modifier.weight(1f))
-    Text(
-        value, color = valueColor, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (40 * k).sp, letterSpacing = (-1 * k).sp,
-        modifier = Modifier.padding(end = (18 * k).dp),
     )
 }
 
-/* ── 右側名次面板 ── */
-
 @Composable
-private fun CompetitiveMatrix(s: RaceUiState, eta: String, k: Float, modifier: Modifier) =
-    Column(modifier.panel(k).padding((20 * k).dp)) {
-        Row(Modifier.fillMaxWidth()) {
-            MonoLabel("COMPETITIVE MATRIX", Cyan, k, 13f)
-            Spacer(Modifier.weight(1f))
-            MonoLabel("FIELD ${s.fieldSize}", Label, k, 13f)
-        }
-        Spacer(Modifier.height((26 * k).dp))
-        MonoLabel("CURRENT RANK", Label, k, 12f)
-        Spacer(Modifier.height((6 * k).dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                s.rank?.let { "P$it" } ?: "--",
-                color = if (s.rank == 1) Gold else Cyan, fontFamily = Mono,
-                fontWeight = FontWeight.Bold, fontSize = (64 * k).sp, letterSpacing = (-2 * k).sp,
-            )
-            Spacer(Modifier.width((10 * k).dp))
-            Text(
-                "/ ${s.fieldSize} ATHLETES", color = Color(0xFFB9CACB), fontFamily = Mono,
-                fontWeight = FontWeight.Medium, fontSize = (20 * k).sp,
-                modifier = Modifier.padding(bottom = (10 * k).dp),
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        val leading = s.rank == 1
-        StatBox(
-            if (leading) Gold else Coral,
-            if (leading) "LEAD OVER P2" else "GAP TO LEADER (P1)",
-            if (leading) fmtMetres(s.gapToNeighbourM?.let { abs(it) }) else fmtMetres(s.gapToLeaderM),
-            when {
-                leading -> "LEADING"
-                s.closingOnLeader == true -> "CLOSING"
-                s.closingOnLeader == false -> "OPENING"
-                else -> "DEFICIT"
-            },
-            k,
+private fun StatusDot(label: String, ok: Boolean, k: Float) =
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val c = if (ok) Cyan else Coral
+        Box(
+            Modifier.size((14 * k).dp).drawBehind {
+                drawCircle(c.copy(alpha = .25f), radius = size.minDimension / 2f)
+                drawCircle(c, radius = size.minDimension / 4f)
+            }
         )
-        Spacer(Modifier.height((12 * k).dp))
-        StatBox(
-            Cyan, if (leading) "NEAREST CHASER" else "GAP TO RUNNER AHEAD",
-            fmtMetres(s.gapToNeighbourM), "RELATIVE", k,
-        )
-        Spacer(Modifier.height((12 * k).dp))
-        StatBox(Gold, "PROJECTED FINISH", eta, "EST. TIME", k)
+        Spacer(Modifier.width((6 * k).dp))
+        SoftLabel(label, if (ok) Label else Coral, k, 13f)
     }
 
+/* ── 左：配速圓盤 ── */
+
 @Composable
-private fun StatBox(accent: Color, title: String, value: String, note: String, k: Float) = Column(
-    Modifier.fillMaxWidth()
-        .clip(RoundedCornerShape((4 * k).dp))
-        .background(accent.copy(alpha = .07f))
-        .border((1.5 * k).dp, accent, RoundedCornerShape((4 * k).dp))
-        .padding(horizontal = (14 * k).dp, vertical = (10 * k).dp),
-) {
-    MonoLabel(title, accent, k, 12f)
-    Spacer(Modifier.height((4 * k).dp))
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(
-            value, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold,
-            fontSize = (34 * k).sp, letterSpacing = (-1 * k).sp,
-        )
-        Spacer(Modifier.weight(1f))
-        MonoLabel(note, Label, k, 11f)
+private fun PaceDial(s: RaceUiState, k: Float) =
+    Box(Modifier.size((330 * k).dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = size.minDimension / 2f - 30f * k
+            drawCircle(Carbon.copy(alpha = .78f), radius = r) // 同玻璃卡片的深底
+            drawCircle(
+                Brush.radialGradient(
+                    listOf(Color.White.copy(alpha = .07f), Color.White.copy(alpha = .02f)),
+                    center = center, radius = r,
+                ),
+                radius = r,
+            )
+            drawCircle(Color.White.copy(alpha = .10f), radius = r, style = Stroke(1.2f * k))
+            glowArc(Cyan, 115f, 130f, size.minDimension / 2f - 12f * k, 9f * k)
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SoftLabel("PACE", Label, k, 20f)
+            Glow(fmtPace(s.pace), Cyan, k, 86f)
+            SoftLabel("/km", Label, k, 22f)
+        }
+    }
+
+/* ── 中：速度環 ── */
+
+private const val RING_START = 135f
+private const val RING_SWEEP = 270f
+
+@Composable
+private fun SpeedRing(s: RaceUiState, now: Long, k: Float) {
+    val frac = (s.speedKmh / SPEED_MAX_KMH).coerceIn(0f, 1f)
+    Box(Modifier.size((500 * k).dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = size.minDimension / 2f - 46f * k
+            val w = 14f * k
+            val lit = RING_SWEEP * frac
+            // 已達速度為青色，剩餘量程為珊瑚紅，兩段中間留一道縫
+            glowArc(Cyan, RING_START, lit, r, w)
+            glowArc(Coral, RING_START + lit + 5f, RING_SWEEP - lit - 5f, r, w, strength = .8f)
+            // 外圈裝飾細弧
+            glowArc(Coral, -55f, 105f, size.minDimension / 2f - 12f * k, 4f * k, strength = .45f)
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SoftLabel("SPEED", Label, k, 20f)
+            Row(verticalAlignment = Alignment.Bottom) {
+                Glow("%.1f".format(s.speedKmh), Color.White, k, 44f, glow = false)
+                SoftLabel(" km/h", Label, k, 20f, Modifier.padding(bottom = (8 * k).dp))
+            }
+            val (big, caption, color) = when {
+                s.dnf -> Triple("%,dm".format(s.distance.roundToInt()), "DID NOT FINISH", Coral)
+                // 環內空間有限，只顯示到秒；精確成績在頂列
+                s.finishTimeMs != null -> Triple(etaText(s, now).substringBefore('.'), "FINISH TIME", Gold)
+                else -> Triple(etaText(s, now).substringBefore('.'), "EST. FINISH", Cyan)
+            }
+            Glow(big, color, k, 96f)
+            SoftLabel(caption, Label, k, 15f)
+            Spacer(Modifier.height((10 * k).dp))
+            CadenceGauge(s, k)
+        }
     }
 }
+
+@Composable
+private fun CadenceGauge(s: RaceUiState, k: Float) =
+    Box(Modifier.width((210 * k).dp).height((96 * k).dp)) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = size.height - 6f * k
+            val tl = Offset(size.width / 2f - r, size.height - r)
+            val sz = Size(r * 2f, r * 2f)
+            val w = 8f * k
+            drawArc(Color.White.copy(alpha = .08f), 200f, 140f, false, tl, sz, style = Stroke(w, cap = StrokeCap.Round))
+            val sweep = 140f * (s.cadence / CADENCE_MAX_SPM).coerceIn(0f, 1f)
+            if (sweep > 0f) {
+                drawArc(Amber.copy(alpha = .2f), 200f, sweep, false, tl, sz, style = Stroke(w * 2.6f, cap = StrokeCap.Round))
+                drawArc(
+                    Brush.sweepGradient(listOf(Coral, Amber, Gold), center = Offset(size.width / 2f, size.height)),
+                    200f, sweep, false, tl, sz, style = Stroke(w, cap = StrokeCap.Round),
+                )
+            }
+        }
+        Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+            Glow("${s.cadence}", Color.White, k, 42f, glow = false)
+            SoftLabel("SPM", Label, k, 14f)
+        }
+    }
+
+/* ── 右：迷你即時榜 ── */
+
+@Composable
+private fun LeaderboardCard(s: RaceUiState, k: Float) = Column(
+    Modifier.width((340 * k).dp).glass(k).padding((24 * k).dp),
+) {
+    val leading = s.rank == 1
+    // 兩位數名次（P12 / 12）時縮字，否則右側差距欄會被擠到截斷
+    val twoDigits = s.fieldSize >= 10
+    SoftLabel("LIVE LEADERBOARD", Color.White.copy(alpha = .9f), k, 17f)
+    GlassDivider(k)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        // 名次接總人數（P2 / 6）：總人數 = 本場報名人數，含尚未起跑者
+        Row(verticalAlignment = Alignment.Bottom) {
+            Glow(s.rank?.let { "P$it" } ?: "--", if (leading) Gold else Color.White, k, if (twoDigits) 52f else 64f, glow = leading)
+            if (s.fieldSize > 0) {
+                SoftLabel(
+                    "/ ${s.fieldSize}", Label, k, if (twoDigits) 22f else 26f,
+                    Modifier.padding(start = (6 * k).dp, bottom = ((if (twoDigits) 10 else 12) * k).dp),
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Column(horizontalAlignment = Alignment.End) {
+            SoftLabel(if (leading) "LEAD OVER P2" else "GAP TO LEADER", Label, k, 15f)
+            val gap = if (leading) fmtMetres(s.gapToNeighbourM?.let { abs(it) }) else fmtMetres(s.gapToLeaderM)
+            Glow(gap, if (leading) Gold else Coral, k, gapSize(gap))
+            SoftLabel(
+                when {
+                    leading -> "LEADING"
+                    s.closingOnLeader == true -> "▲ CLOSING"
+                    s.closingOnLeader == false -> "▼ OPENING"
+                    else -> " "
+                }, Label, k, 12f,
+            )
+        }
+    }
+    GlassDivider(k)
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        SoftLabel(if (leading) "NEAREST CHASER" else "GAP TO RUNNER AHEAD", Label, k, 15f)
+        fmtMetres(s.gapToNeighbourM).let { Glow(it, Cyan, k, gapSize(it)) }
+    }
+}
+
+/** 差距到四位數（+1250m）時縮字，避免與左側的「P11 / 11」重疊。 */
+private fun gapSize(text: String) = if (text.length > 5) 36f else 44f
+
+@Composable
+private fun GlassDivider(k: Float) = Box(
+    Modifier.padding(vertical = (14 * k).dp).fillMaxWidth().height((1 * k).dp)
+        .background(Color.White.copy(alpha = .10f))
+)
+
+@Composable
+private fun SpeedControl(s: RaceUiState, vm: RaceViewModel, enabled: Boolean, k: Float) = Row(
+    Modifier.width((340 * k).dp).glass(k, radius = 50f).padding((8 * k).dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    RoundButton("−", enabled, k) { vm.nudgeSpeed(-0.5f) }
+    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+        SoftLabel(
+            when {
+                enabled -> "TARGET SPEED"
+                s.startAtServerTime == null -> "UNLOCKS AT START"
+                s.finishTimeMs == null && !s.closed -> "GET SET"
+                else -> "RACE OVER"
+            }, Label, k, 12f,
+        )
+        Glow(
+            "%.1f km/h".format(s.targetSpeed), Color.White.copy(alpha = if (enabled) 1f else .45f),
+            k, 22f, glow = false,
+        )
+    }
+    RoundButton("+", enabled, k) { vm.nudgeSpeed(0.5f) }
+}
+
+@Composable
+private fun RoundButton(label: String, enabled: Boolean, k: Float, onClick: () -> Unit) = Box(
+    Modifier.size((52 * k).dp).clip(RoundedCornerShape(50))
+        .background(if (enabled) Cyan.copy(alpha = .10f) else Color.White.copy(alpha = .04f))
+        .border((1 * k).dp, if (enabled) Cyan.copy(alpha = .5f) else Color.White.copy(alpha = .12f), RoundedCornerShape(50))
+        .clickable(enabled = enabled, onClick = onClick),
+    contentAlignment = Alignment.Center,
+) { Glow(label, if (enabled) Cyan else Label.copy(alpha = .4f), k, 28f, glow = enabled) }
 
 /* ── 底部賽道 ── */
 
 @Composable
-private fun StageDistance(s: RaceUiState, k: Float) {
+private fun CompetitionTrack(s: RaceUiState, k: Float) {
     val pct = (s.distance / s.raceDistanceM).coerceIn(0.0, 1.0).toFloat()
     val leaderPct = s.leaderDistanceM?.let { (it / s.raceDistanceM).coerceIn(0.0, 1.0).toFloat() }
-    Column(Modifier.fillMaxWidth().padding(horizontal = (6 * k).dp)) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            MonoLabel("STAGE DISTANCE", Label, k, 12f)
-            Spacer(Modifier.width((14 * k).dp))
-            Text(
-                "%,d / %,d M".format(s.distance.roundToInt(), s.raceDistanceM.roundToInt()),
-                color = Color.White, fontFamily = Mono, fontWeight = FontWeight.Bold,
-                fontSize = (30 * k).sp, letterSpacing = (-1 * k).sp,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "%.1f%% COMPLETED".format(pct * 100),
-                color = Cyan, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = (16 * k).sp,
+    val fill = if (s.finishTimeMs != null) Gold else Cyan
+    Column(Modifier.fillMaxWidth().padding(horizontal = (110 * k).dp)) {
+        SoftLabel("%,dm COMPETITION TRACK".format(s.raceDistanceM.roundToInt()), Color.White.copy(alpha = .8f), k, 18f)
+        Spacer(Modifier.height((6 * k).dp))
+        Canvas(Modifier.fillMaxWidth().height((48 * k).dp)) {
+            val barH = 28f * k
+            val top = size.height - barH
+            val pill = CornerRadius(barH / 2f)
+            drawRoundRect(Color.White.copy(alpha = .05f), Offset(0f, top), Size(size.width, barH), pill)
+            drawRoundRect(Color.White.copy(alpha = .28f), Offset(0f, top), Size(size.width, barH), pill, style = Stroke(1.5f * k))
+
+            val inset = 6f * k
+            val innerH = barH - inset * 2f
+            val innerW = size.width - inset * 2f
+            val x = inset + innerW * pct
+            if (pct > 0f) {
+                // 兩層加寬的半透明底模擬光暈
+                listOf(10f * k to .07f, 5f * k to .16f).forEach { (g, a) ->
+                    drawRoundRect(
+                        fill.copy(alpha = a), Offset(inset - g, top + inset - g),
+                        Size(innerW * pct + g * 2f, innerH + g * 2f), CornerRadius(innerH / 2f + g),
+                    )
+                }
+                drawRoundRect(
+                    Brush.horizontalGradient(listOf(fill.copy(alpha = .7f), fill), startX = inset, endX = x),
+                    Offset(inset, top + inset), Size(innerW * pct, innerH), CornerRadius(innerH / 2f),
+                )
+            }
+            leaderPct?.takeIf { it > pct + .002f }?.let { lp ->
+                val lx = inset + innerW * lp
+                drawCircle(Gold.copy(alpha = .3f), radius = 9f * k, center = Offset(lx, top + barH / 2f))
+                drawCircle(Gold, radius = 5f * k, center = Offset(lx, top + barH / 2f))
+            }
+            // 自己的位置：賽道上方的白色倒三角
+            val t = 10f * k
+            drawPath(
+                Path().apply {
+                    moveTo(x - t, top - 16f * k); lineTo(x + t, top - 16f * k); lineTo(x, top - 4f * k); close()
+                },
+                Color.White,
             )
         }
         Spacer(Modifier.height((10 * k).dp))
-        Box(Modifier.fillMaxWidth().height((34 * k).dp)) {
-            Canvas(Modifier.fillMaxSize()) {
-                val barH = 12f * k
-                val top = 14f * k
-                drawRoundRect(
-                    Color(0xFF16232B), topLeft = Offset(0f, top), size = Size(size.width, barH),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barH / 2f),
-                )
-                if (pct > 0f) {
-                    drawRoundRect(
-                        (if (s.finishTimeMs != null) Gold else Cyan).copy(alpha = .25f),
-                        topLeft = Offset(0f, top - 3f * k),
-                        size = Size(size.width * pct, barH + 6f * k),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(barH),
-                    )
-                    drawRoundRect(
-                        if (s.finishTimeMs != null) Gold else Cyan,
-                        topLeft = Offset(0f, top), size = Size(size.width * pct, barH),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(barH / 2f),
-                    )
-                }
-                // 每五分之一賽程一道刻度，最後五分之一為衝刺區
-                for (i in 1..4) {
-                    val x = size.width * (i / 5f)
-                    drawLine(
-                        if (i == 4) Coral.copy(alpha = .8f) else Color(0xFF3A5460),
-                        Offset(x, top - 5f * k), Offset(x, top + barH + 5f * k), strokeWidth = 2f * k,
-                    )
-                }
-                leaderPct?.let { lp ->
-                    val x = size.width * lp
-                    drawCircle(Gold, radius = 7f * k, center = Offset(x, top + barH / 2f))
-                }
-                val me = size.width * pct
-                val d = 9f * k
-                drawPath(
-                    Path().apply {
-                        moveTo(me, top + barH / 2f - d); lineTo(me + d, top + barH / 2f)
-                        lineTo(me, top + barH / 2f + d); lineTo(me - d, top + barH / 2f); close()
-                    },
-                    Color.White,
-                )
-            }
-        }
-        Row(Modifier.fillMaxWidth()) {
-            val step = s.raceDistanceM / 5
-            listOf(
-                "%,dM".format((step * 1).roundToInt()),
-                "%,dM".format((step * 2).roundToInt()),
-                "%,dM".format((step * 3).roundToInt()),
-                "%,dM SPRINT".format((step * 4).roundToInt()),
-                "%,dM FINISH".format(s.raceDistanceM.roundToInt()),
-            ).forEachIndexed { i, t ->
-                if (i > 0) Spacer(Modifier.weight(1f))
-                MonoLabel(t, if (i >= 3) Coral.copy(alpha = .8f) else Color(0xFF4A6470), k, 10f)
-            }
-        }
+        Text(
+            "%,dm / %,dm (%d%%)".format(s.distance.roundToInt(), s.raceDistanceM.roundToInt(), (pct * 100).roundToInt()),
+            modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
+            style = TextStyle(
+                color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Medium,
+                fontSize = (22 * k).sp, fontFeatureSettings = "tnum",
+            ),
+        )
     }
 }
 
 /* ── 共用小元件 ── */
 
 @Composable
-private fun MonoLabel(text: String, color: Color, k: Float, size: Float) = Text(
-    text, color = color, fontFamily = Mono, fontWeight = FontWeight.Bold,
-    fontSize = (size * k).sp, letterSpacing = (size * 0.15f * k).sp, maxLines = 1,
+private fun SoftLabel(text: String, color: Color, k: Float, size: Float, modifier: Modifier = Modifier) = Text(
+    text, color = color, fontFamily = Grotesk, fontWeight = FontWeight.Medium,
+    fontSize = (size * k).sp, letterSpacing = (size * .06f * k).sp, maxLines = 1, modifier = modifier,
 )
 
+/** 大數字：Space Grotesk 粗體、等寬數字，可選同色柔光。 */
 @Composable
-private fun NudgeButton(label: String, k: Float, onClick: () -> Unit) = Box(
-    Modifier.size((34 * k).dp)
-        .clip(RoundedCornerShape((4 * k).dp))
-        .background(Color(0x44123240))
-        .border((1 * k).dp, Hair, RoundedCornerShape((4 * k).dp))
-        .clickable(onClick = onClick),
-    contentAlignment = Alignment.Center,
-) { Text(label, color = Cyan, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = (18 * k).sp) }
+private fun Glow(text: String, color: Color, k: Float, size: Float, glow: Boolean = true) {
+    val density = LocalDensity.current.density
+    Text(
+        text, maxLines = 1,
+        style = TextStyle(
+            color = color, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
+            fontSize = (size * k).sp, letterSpacing = (-size * .02f * k).sp, fontFeatureSettings = "tnum",
+            shadow = if (glow) Shadow(color.copy(alpha = .55f), Offset.Zero, size * .35f * k * density) else null,
+        ),
+    )
+}
 
-/** 面板外框：細邊框加上右上與左下的轉角括號。 */
-private fun Modifier.panel(k: Float, bracket: Color = Cyan, edge: Color = Color(0xFF16323C)): Modifier = this
-    .clip(RoundedCornerShape((4 * k).dp))
-    .background(Color(0xFF0B1219))
-    .drawBehind {
-        val w = 1.5f * k
-        drawRect(edge, style = Stroke(width = w))
-        val len = 28f * k
-        val c = bracket
-        drawLine(c, Offset(size.width - len, w), Offset(size.width - w, w), strokeWidth = w * 2)
-        drawLine(c, Offset(size.width - w, w), Offset(size.width - w, len), strokeWidth = w * 2)
-        drawLine(c, Offset(w, size.height - len), Offset(w, size.height - w), strokeWidth = w * 2)
-        drawLine(c, Offset(w, size.height - w), Offset(len, size.height - w), strokeWidth = w * 2)
-    }
+/** 玻璃卡片：半透明白底、細白邊、大圓角。 */
+private fun Modifier.glass(
+    k: Float, edge: Color = Color.White.copy(alpha = .14f), tint: Color? = null, radius: Float = 22f,
+): Modifier {
+    val shape = RoundedCornerShape((radius * k).dp)
+    // 先墊一層深底當「毛玻璃」：背景資料流不會透出來干擾數字（真模糊需 API 31+ RenderEffect）
+    return this.clip(shape)
+        .background(Carbon.copy(alpha = .78f))
+        .background(
+            if (tint != null) Brush.verticalGradient(listOf(tint, tint))
+            else Brush.verticalGradient(listOf(Color.White.copy(alpha = .09f), Color.White.copy(alpha = .035f)))
+        )
+        .border((1 * k).dp, edge, shape)
+}
+
+/** 字標：發光圓角青條＋斜體粗體 Space Grotesk（HUD、大廳、個人資料共用）。 */
+@Composable
+private fun FitRaceLogo(k: Float) = Row(verticalAlignment = Alignment.CenterVertically) {
+    Box(
+        Modifier.width((5 * k).dp).height((26 * k).dp).drawBehind {
+            drawRoundRect(Cyan.copy(alpha = .3f), Offset(-3f * k, -3f * k), Size(size.width + 6f * k, size.height + 6f * k), CornerRadius(6f * k))
+            drawRoundRect(Cyan, cornerRadius = CornerRadius(3f * k))
+        }
+    )
+    Spacer(Modifier.width((10 * k).dp))
+    Text(
+        "FitRace",
+        style = TextStyle(
+            color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
+            fontStyle = FontStyle.Italic, fontSize = (30 * k).sp, letterSpacing = (-0.6 * k).sp,
+            shadow = Shadow(Cyan.copy(alpha = .35f), Offset.Zero, 18f * k * LocalDensity.current.density),
+        ),
+    )
+}
 
 /* ── 繪圖與格式化 ── */
 
-private const val ARC_START = 250f
-private const val ARC_SWEEP = 220f
-
-/** 速度弧：開口在左側，自十點鐘順時針掃到五點鐘。 */
-private fun DrawScope.speedArc(color: Color, fraction: Float, width: Float) {
-    if (fraction <= 0f) return
-    val pad = width / 2f + 26f
-    val d = size.minDimension - pad * 2f
-    val topLeft = Offset((size.width - d) / 2f, (size.height - d) / 2f)
-    if (color != Cyan) {
+/**
+ * 發光弧：三層同心筆畫（寬而淡 → 窄而實）疊出光暈。
+ * ponytail: 疊筆畫取代 BlurMaskFilter，便宜且不需離屏圖層；要更真實的散景再換 RenderEffect。
+ */
+private fun DrawScope.glowArc(color: Color, start: Float, sweep: Float, radius: Float, width: Float, strength: Float = 1f) {
+    if (sweep <= 0f) return
+    val tl = Offset(center.x - radius, center.y - radius)
+    val sz = Size(radius * 2f, radius * 2f)
+    listOf(4.5f to .06f, 2.4f to .16f, 1f to 1f).forEach { (m, a) ->
         drawArc(
-            color, ARC_START, ARC_SWEEP * fraction, false, topLeft, Size(d, d),
-            style = Stroke(width, cap = androidx.compose.ui.graphics.StrokeCap.Round),
+            color.copy(alpha = a * strength), start, sweep, false, tl, sz,
+            style = Stroke(width * m, cap = StrokeCap.Round),
         )
-        return
     }
-    drawArc(
-        color.copy(alpha = .22f), ARC_START, ARC_SWEEP * fraction, false, topLeft, Size(d, d),
-        style = Stroke(width * 2.6f, cap = androidx.compose.ui.graphics.StrokeCap.Round),
-    )
-    drawArc(
-        color, ARC_START, ARC_SWEEP * fraction, false, topLeft, Size(d, d),
-        style = Stroke(width, cap = androidx.compose.ui.graphics.StrokeCap.Round),
-    )
 }
 
-/** 弧外圈的點狀刻度環。 */
-private fun DrawScope.dottedRing(color: Color, count: Int, dot: Float) {
-    val r = size.minDimension / 2f - 6f
-    val cx = size.width / 2f
-    val cy = size.height / 2f
-    for (i in 0..count) {
-        val a = Math.toRadians((ARC_START + ARC_SWEEP * i / count).toDouble())
-        drawCircle(
-            color, radius = dot / 2f,
-            center = Offset(cx + (kotlin.math.cos(a) * r).toFloat(), cy + (kotlin.math.sin(a) * r).toFloat()),
-        )
+private fun DrawScope.ambient(color: Color, at: Offset, radius: Float) = drawCircle(
+    Brush.radialGradient(listOf(color, Color.Transparent), center = at, radius = radius),
+    radius = radius, center = at,
+)
+
+/** 左青右紅的環境光，取代硬邊框來分區（HUD、大廳、個人資料共用）。 */
+private fun DrawScope.ambientBackdrop() {
+    // 背景每次重繪都一樣，只在尺寸改變時畫一次到點陣圖，之後每幀貼一張圖（HUD 每 50ms 重繪）
+    val cached = backdropCache?.takeIf { it.first == size }?.second ?: ImageBitmap(
+        size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1),
+    ).also { bmp ->
+        CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(bmp), size) {
+            ambient(Cyan.copy(alpha = .10f), Offset(size.width * .3f, size.height * .5f), size.width * .45f)
+            ambient(Coral.copy(alpha = .08f), Offset(size.width * .95f, size.height * .95f), size.width * .35f)
+            dataStreams()
+        }
+        backdropCache = size to bmp
+    }
+    drawImage(cached)
+}
+
+private var backdropCache: Pair<Size, ImageBitmap>? = null
+
+/** 資料流的一段：side 0 左 / 1 右；row 為相對地平線的垂直位置 (-1..1)；u 為從螢幕外緣 (0) 往中心 (1) 的位置。 */
+private class StreamBit(val side: Int, val row: Float, val u0: Float, val u1: Float, val kind: Int)
+
+/** 固定種子，每次開機畫面都一樣。kind 0 = 暗色「程式碼」，1 = 青色亮段，2 = 珊瑚紅亮段。 */
+private val STREAM_BITS: List<StreamBit> by lazy {
+    val rnd = java.util.Random(7)
+    buildList {
+        for (side in 0..1) for (i in 0 until 20) {
+            val row = -1f + 2f * i / 19f + (rnd.nextFloat() - .5f) * .05f
+            var u = rnd.nextFloat() * .04f
+            while (u < 1f) {
+                val roll = rnd.nextFloat()
+                // 紅色亮段多放右側，呼應設計稿
+                val kind = when {
+                    roll < .06f -> 1
+                    roll < (if (side == 1) .12f else .08f) -> 2
+                    else -> 0
+                }
+                val len = if (kind == 0) .008f + rnd.nextFloat() * .05f else .04f + rnd.nextFloat() * .06f
+                add(StreamBit(side, row, u, min(1f, u + len), kind))
+                u += len + .006f + rnd.nextFloat() * .03f
+            }
+        }
     }
 }
+
+/**
+ * 設計稿兩側的資料流：一排排向畫面中心透視收束的細碎線段，像高速掠過的終端機文字。
+ * 越往中心越細越淡，讓出主儀表的位置。
+ */
+private fun DrawScope.dataStreams() {
+    val w = size.width
+    val h = size.height
+    val cy = h * .46f
+    val reach = .36f // 每側佔畫面寬度比例
+    for (b in STREAM_BITS) {
+        val um = (b.u0 + b.u1) / 2f
+        val shrink = 1f - .8f * um // 透視：往中心收束
+        val y = cy + b.row * h * .6f * shrink
+        val x0 = if (b.side == 0) w * reach * b.u0 else w * (1f - reach * b.u1)
+        val x1 = if (b.side == 0) w * reach * b.u1 else w * (1f - reach * b.u0)
+        val thick = h * (if (b.kind == 0) .0055f else .007f) * shrink
+        // 外緣清楚、中心淡出；上下兩端也收淡，避免壓到頂列與賽道
+        val fade = (1f - um * .85f) * (1f - abs(b.row) * .45f)
+        val color = when (b.kind) {
+            1 -> Cyan.copy(alpha = .85f * fade)
+            2 -> Coral.copy(alpha = .90f * fade)
+            else -> Label.copy(alpha = .30f * fade)
+        }
+        if (b.kind != 0) {
+            // 亮段加一層寬而淡的底模擬光暈
+            drawRect(color.copy(alpha = color.alpha * .3f), Offset(x0, y - thick * 2f), Size(x1 - x0, thick * 5f))
+        }
+        drawRect(color, Offset(x0, y - thick / 2f), Size(x1 - x0, thick))
+    }
+}
+
+/** 兩端淡出的細白分隔線。 */
+private fun DrawScope.softHairline(y: Float, k: Float) = drawRect(
+    Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .14f), Color.Transparent)),
+    Offset(0f, y), Size(size.width, 1f * k),
+)
 
 /** 協議是 04'03"，畫面用 03:15 這種寫法 */
+private fun beltStatusText(status: BeltStatus) = status.name
+
 private fun fmtPace(p: String) = p.replace("'", ":").replace("\"", "")
 
 /** 已跑時間加上「以目前速度跑完剩餘距離」的推估完賽時間；已完賽則顯示實際成績。 */
@@ -962,7 +1509,7 @@ private fun etaText(s: RaceUiState, now: Long): String {
 private fun fmtMetres(m: Double?): String {
     if (m == null) return "--"
     val r = m.roundToInt()
-    return if (r >= 0) "+$r M" else "-${abs(r)} M"
+    return if (r >= 0) "+${r}m" else "-${abs(r)}m"
 }
 
 private fun fmtClock(ms: Long): String {
@@ -1006,23 +1553,21 @@ private fun Lobby(s: RaceUiState, vm: RaceViewModel) {
         compareBy({ STATUS_ORDER.indexOf(it.status).let { i -> if (i < 0) 99 else i } }, { it.roomId }),
     )
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(Carbon)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop() }) {
         val k = min(maxWidth.value / 1280f, maxHeight.value / 800f)
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(horizontal = (36 * k).dp)) {
             LobbyTopBar(s, vm, k)
-            Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Hair))
             s.lobbyNotice?.let { NoticeBanner(it, k) }
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (rooms.isEmpty()) {
-                    MonoLabel(
+                    SoftLabel(
                         if (s.lobbyOnline) "NO RACES YET — WAITING FOR THE ORGANIZER TO OPEN A HEAT"
                         else "CONNECTING TO RACE SERVER…",
-                        Label, k, 15f,
+                        Label, k, 17f,
                     )
                 } else {
                     LazyRow(
-                        Modifier.fillMaxHeight().padding(vertical = (28 * k).dp),
-                        contentPadding = PaddingValues(horizontal = (24 * k).dp),
+                        Modifier.fillMaxHeight().padding(vertical = (24 * k).dp),
                         horizontalArrangement = Arrangement.spacedBy((16 * k).dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1039,72 +1584,54 @@ private fun Lobby(s: RaceUiState, vm: RaceViewModel) {
 
 @Composable
 private fun LobbyTopBar(s: RaceUiState, vm: RaceViewModel, k: Float) = Row(
-    Modifier.fillMaxWidth().height((80 * k).dp).padding(horizontal = (24 * k).dp),
+    Modifier.fillMaxWidth().height((84 * k).dp).drawBehind { softHairline(size.height - 1f * k, k) },
     verticalAlignment = Alignment.CenterVertically,
 ) {
-    Box(Modifier.width((6 * k).dp).height((30 * k).dp).background(Cyan))
-    Spacer(Modifier.width((12 * k).dp))
-    Text(
-        "FitRace", color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
-        fontStyle = FontStyle.Italic, fontSize = (32 * k).sp, letterSpacing = (-0.6 * k).sp,
+    FitRaceLogo(k)
+    Box(
+        Modifier.padding(horizontal = (16 * k).dp).width((1 * k).dp).height((22 * k).dp)
+            .background(Color.White.copy(alpha = .18f))
     )
-    Spacer(Modifier.width((14 * k).dp))
-    Text(
-        "// SELECT RACE", color = Cyan, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (20 * k).sp, letterSpacing = (3 * k).sp,
-    )
+    SoftLabel("SELECT RACE", Color.White.copy(alpha = .8f), k, 18f)
     Spacer(Modifier.weight(1f))
 
     // 個人資料膠囊
     Row(
-        Modifier.clip(RoundedCornerShape((4 * k).dp)).background(Color(0xFF0E171E))
-            .border((1 * k).dp, Hair, RoundedCornerShape((4 * k).dp))
-            .padding(horizontal = (14 * k).dp, vertical = (8 * k).dp),
+        Modifier.glass(k, radius = 50f).padding(horizontal = (6 * k).dp, vertical = (5 * k).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.border((1 * k).dp, Label, RoundedCornerShape((2 * k).dp))
-                .padding(horizontal = (8 * k).dp, vertical = (4 * k).dp),
-        ) { MonoLabel(s.profile.country.ifBlank { "--" }, Color.White, k, 15f) }
+            Modifier.size((34 * k).dp).clip(RoundedCornerShape(50)).background(Cyan.copy(alpha = .12f))
+                .border((1 * k).dp, Cyan.copy(alpha = .45f), RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center,
+        ) { SoftLabel(s.profile.country.ifBlank { "--" }, Cyan, k, 13f) }
         Spacer(Modifier.width((12 * k).dp))
         Column {
             Text(
                 s.profile.name, color = Color.White, fontFamily = Grotesk,
-                fontWeight = FontWeight.Bold, fontSize = (19 * k).sp, maxLines = 1,
+                fontWeight = FontWeight.Bold, fontSize = (18 * k).sp, lineHeight = (20 * k).sp, maxLines = 1,
             )
-            MonoLabel(s.profile.runnerId, Label, k, 11f)
+            SoftLabel(s.profile.runnerId, Label, k, 11f)
         }
         Spacer(Modifier.width((16 * k).dp))
         Box(
-            Modifier.clip(RoundedCornerShape((2 * k).dp))
-                .border((1 * k).dp, Label, RoundedCornerShape((2 * k).dp))
+            Modifier.clip(RoundedCornerShape(50))
+                .border((1 * k).dp, Color.White.copy(alpha = .25f), RoundedCornerShape(50))
                 .clickable { vm.editProfile() }
-                .padding(horizontal = (12 * k).dp, vertical = (8 * k).dp),
-        ) { MonoLabel("EDIT PROFILE", Color.White, k, 12f) }
+                .padding(horizontal = (16 * k).dp, vertical = (8 * k).dp),
+        ) { SoftLabel("EDIT PROFILE", Color.White, k, 12f) }
     }
 
-    Spacer(Modifier.width((20 * k).dp))
-    Box(Modifier.width((1 * k).dp).height((36 * k).dp).background(Hair))
-    Spacer(Modifier.width((18 * k).dp))
-    Box(
-        Modifier.size((10 * k).dp).clip(RoundedCornerShape(50))
-            .background(if (s.lobbyOnline) Cyan else Coral)
-    )
-    Spacer(Modifier.width((10 * k).dp))
-    Column {
-        MonoLabel("RACE SERVER", Label, k, 11f)
-        MonoLabel(if (s.lobbyOnline) "ONLINE" else "OFFLINE", if (s.lobbyOnline) Cyan else Coral, k, 15f)
-    }
+    Spacer(Modifier.width((24 * k).dp))
+    StatusDot("RACE SERVER · " + if (s.lobbyOnline) "ONLINE" else "OFFLINE", s.lobbyOnline, k)
 }
 
 @Composable
 private fun NoticeBanner(text: String, k: Float) = Box(
-    Modifier.fillMaxWidth().padding(horizontal = (24 * k).dp, vertical = (12 * k).dp)
-        .clip(RoundedCornerShape((4 * k).dp))
-        .background(Color(0xEB1A0A12))
-        .border((1.5 * k).dp, Coral, RoundedCornerShape((4 * k).dp))
-        .padding(horizontal = (18 * k).dp, vertical = (12 * k).dp),
-) { MonoLabel(text, Coral, k, 14f) }
+    Modifier.fillMaxWidth().padding(top = (14 * k).dp)
+        .glass(k, Coral.copy(alpha = .5f), Color(0xCC1A0A12), radius = 50f)
+        .padding(horizontal = (24 * k).dp, vertical = (12 * k).dp),
+) { SoftLabel(text, Coral, k, 15f) }
 
 @Composable
 private fun RoomCard(r: RoomInfo, serverNow: Long, k: Float, onJoin: () -> Unit) {
@@ -1113,51 +1640,42 @@ private fun RoomCard(r: RoomInfo, serverNow: Long, k: Float, onJoin: () -> Unit)
     val roomFull = r.capacity != null && r.runnerCount >= r.capacity
     Column(
         Modifier.width((236 * k).dp).fillMaxHeight()
-            .panel(k, bracket = accent, edge = accent.copy(alpha = if (finished) .18f else .4f))
+            .glass(k, accent.copy(alpha = if (finished) .10f else .28f))
+            // 卡片頂端一抹狀態色的環境光，取代硬邊括號
+            .drawBehind { ambient(accent.copy(alpha = if (finished) .04f else .14f), Offset(size.width * .5f, 0f), size.width * .9f) }
             .padding((18 * k).dp),
     ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    r.title, color = if (finished) Label else Color.White,
-                    fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = (22 * k).sp,
-                    lineHeight = (26 * k).sp,
-                )
-                MonoLabel(r.roomId, Label, k, 11f)
-            }
-            Spacer(Modifier.width((8 * k).dp))
-            Box(
-                Modifier.border((1 * k).dp, accent, RoundedCornerShape((2 * k).dp))
-                    .background(accent.copy(alpha = .12f))
-                    .padding(horizontal = (6 * k).dp, vertical = (3 * k).dp),
-            ) {
-                Text(
-                    statusBadge(r.status), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold,
-                    fontSize = (11 * k).sp, letterSpacing = (1.5 * k).sp, lineHeight = (13 * k).sp,
-                    modifier = Modifier.width((78 * k).dp),
-                )
-            }
-        }
-        Box(Modifier.padding(vertical = (14 * k).dp).fillMaxWidth().height((1 * k).dp).background(Hair))
+        StatusPill(r.status, accent, k)
+        Spacer(Modifier.height((12 * k).dp))
+        Text(
+            r.title, color = if (finished) Label else Color.White, maxLines = 2,
+            fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = (22 * k).sp,
+            lineHeight = (26 * k).sp,
+        )
+        SoftLabel(r.roomId, Label, k, 11f)
+        GlassDivider(k)
 
         when (r.status) {
             "OPEN" -> {
-                MonoLabel("DISTANCE TARGET", Label, k, 12f)
+                SoftLabel("DISTANCE TARGET", Label, k, 12f)
                 BigDistance(r.raceDistanceM, Color.White, k)
-                Spacer(Modifier.height((14 * k).dp))
+                Spacer(Modifier.height((12 * k).dp))
                 // 顯示參賽人數與容量
                 if (r.capacity != null) {
                     InfoBox("ATHLETES ENTERED", "${r.runnerCount} / ${r.capacity}", Cyan, k)
-                    Spacer(Modifier.height((8 * k).dp))
+                    Spacer(Modifier.height((10 * k).dp))
                     CapacityBar(r.runnerCount, r.capacity, k)
                 } else {
                     InfoBox("ATHLETES ENTERED", "${r.runnerCount}", Cyan, k)
                 }
                 // 自動發令倒計時
                 if (r.autoStartAtServerTime != null) {
-                    Spacer(Modifier.height((8 * k).dp))
+                    Spacer(Modifier.height((10 * k).dp))
                     val secRemain = ((r.autoStartAtServerTime - serverNow + 999) / 1000).coerceAtLeast(0)
-                    MonoLabel("AUTO START IN ${secRemain / 60}:${"%02d".format(secRemain % 60)}", Gold, k, 12f)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SoftLabel("AUTO START IN ", Label, k, 12f)
+                        Glow("${secRemain / 60}:${"%02d".format(secRemain % 60)}", Gold, k, 16f)
+                    }
                 }
             }
             "STARTING" -> {
@@ -1176,9 +1694,9 @@ private fun RoomCard(r: RoomInfo, serverNow: Long, k: Float, onJoin: () -> Unit)
                 DistanceAndField(r, accent, k)
             }
             else -> {
-                MonoLabel("STAGE DISTANCE", Label, k, 12f)
+                SoftLabel("STAGE DISTANCE", Label, k, 12f)
                 BigDistance(r.raceDistanceM, Muted, k)
-                Spacer(Modifier.height((14 * k).dp))
+                Spacer(Modifier.height((12 * k).dp))
                 InfoBox("FIELD", "${r.runnerCount} · ALL FINISHED", Muted, k)
             }
         }
@@ -1199,143 +1717,157 @@ private fun RoomCard(r: RoomInfo, serverNow: Long, k: Float, onJoin: () -> Unit)
                 LockedBox("ROOM FULL", Muted, k)
             }
             else -> {
-                JoinButton(k, onJoin)
+                PrimaryPill("JOIN RACE", k, onJoin)
             }
         }
     }
 }
 
 @Composable
-private fun BigDistance(m: Double, color: Color, k: Float) = Row(verticalAlignment = Alignment.Bottom) {
-    Text(
-        "%,d".format(m.roundToInt()), color = color, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (58 * k).sp, letterSpacing = (-2 * k).sp,
+private fun StatusPill(status: String, accent: Color, k: Float) = Row(
+    Modifier.clip(RoundedCornerShape(50)).background(accent.copy(alpha = .12f))
+        .border((1 * k).dp, accent.copy(alpha = .4f), RoundedCornerShape(50))
+        .padding(horizontal = (10 * k).dp, vertical = (5 * k).dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Box(
+        Modifier.size((10 * k).dp).drawBehind {
+            drawCircle(accent.copy(alpha = .3f), radius = size.minDimension / 2f)
+            drawCircle(accent, radius = size.minDimension / 4f)
+        }
     )
-    Spacer(Modifier.width((4 * k).dp))
-    Text(
-        "M", color = if (color == Muted) Muted else Cyan, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (18 * k).sp, modifier = Modifier.padding(bottom = (12 * k).dp),
-    )
+    Spacer(Modifier.width((6 * k).dp))
+    SoftLabel(statusBadge(status), accent, k, 11f)
 }
 
 @Composable
+private fun BigDistance(m: Double, color: Color, k: Float) = Row(verticalAlignment = Alignment.Bottom) {
+    Glow("%,d".format(m.roundToInt()), color, k, 58f, glow = color != Muted)
+    Spacer(Modifier.width((4 * k).dp))
+    SoftLabel("m", if (color == Muted) Muted else Cyan, k, 20f, Modifier.padding(bottom = (12 * k).dp))
+}
+
+/** 名額條：與 HUD 賽道同款的膠囊軌道＋發光填色。 */
+@Composable
 private fun CapacityBar(entered: Int, capacity: Int, k: Float) {
-    val segments = min(20, capacity)
-    val filledSegments = min(segments, (entered * segments + capacity - 1) / capacity)
-    Row(Modifier.fillMaxWidth().height((6 * k).dp), horizontalArrangement = Arrangement.spacedBy((2 * k).dp)) {
-        repeat(segments) { i ->
-            Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .background(if (i < filledSegments) Cyan else Hair)
-            )
+    val frac = if (capacity > 0) (entered.toFloat() / capacity).coerceIn(0f, 1f) else 0f
+    Canvas(Modifier.fillMaxWidth().height((8 * k).dp)) {
+        val pill = CornerRadius(size.height / 2f)
+        drawRoundRect(Color.White.copy(alpha = .08f), cornerRadius = pill)
+        if (frac > 0f) {
+            val w = max(size.height, size.width * frac)
+            val g = 3f * k
+            drawRoundRect(Cyan.copy(alpha = .18f), Offset(-g, -g), Size(w + g * 2f, size.height + g * 2f), CornerRadius(size.height / 2f + g))
+            drawRoundRect(Cyan, size = Size(w, size.height), cornerRadius = pill)
         }
     }
 }
 
 @Composable
 private fun InfoBox(label: String, value: String, accent: Color, k: Float) = Column(
-    Modifier.fillMaxWidth().clip(RoundedCornerShape((2 * k).dp)).background(Color(0xFF0E171E))
-        .border((1 * k).dp, Hair, RoundedCornerShape((2 * k).dp))
-        .padding((12 * k).dp),
+    Modifier.fillMaxWidth().glass(k, Color.White.copy(alpha = .08f), Color.White.copy(alpha = .04f), radius = 14f)
+        .padding(horizontal = (14 * k).dp, vertical = (10 * k).dp),
 ) {
-    MonoLabel(label, Label, k, 11f)
-    Spacer(Modifier.height((4 * k).dp))
-    Text(
-        value, color = if (accent == Muted) Muted else Color.White, fontFamily = Mono,
-        fontWeight = FontWeight.Bold, fontSize = (26 * k).sp,
-    )
+    SoftLabel(label, Label, k, 11f)
+    Spacer(Modifier.height((2 * k).dp))
+    Glow(value, if (accent == Muted) Muted else Color.White, k, 26f, glow = false)
 }
 
 @Composable
 private fun HighlightBox(accent: Color, label: String, value: String, sub: String?, k: Float) = Column(
-    Modifier.fillMaxWidth().clip(RoundedCornerShape((2 * k).dp)).background(accent.copy(alpha = .08f))
-        .border((1 * k).dp, accent.copy(alpha = .5f), RoundedCornerShape((2 * k).dp))
+    Modifier.fillMaxWidth().glass(k, accent.copy(alpha = .35f), accent.copy(alpha = .08f), radius = 16f)
         .padding(vertical = (12 * k).dp),
     horizontalAlignment = Alignment.CenterHorizontally,
 ) {
-    MonoLabel(label, accent, k, 11f)
-    Text(
-        value, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (52 * k).sp, letterSpacing = (-2 * k).sp,
-    )
-    sub?.let { MonoLabel(it, Label, k, 10f) }
+    SoftLabel(label, accent, k, 11f)
+    Glow(value, accent, k, 52f)
+    sub?.let { SoftLabel(it, Label, k, 10f) }
 }
 
 @Composable
 private fun DistanceAndField(r: RoomInfo, accent: Color, k: Float) = Row(Modifier.fillMaxWidth()) {
     Column(Modifier.weight(1f)) {
-        MonoLabel("DISTANCE", Label, k, 11f)
-        Text(
-            "%,d M".format(r.raceDistanceM.roundToInt()), color = Color.White, fontFamily = Mono,
-            fontWeight = FontWeight.Bold, fontSize = (20 * k).sp,
-        )
+        SoftLabel("DISTANCE", Label, k, 11f)
+        Glow("%,d m".format(r.raceDistanceM.roundToInt()), Color.White, k, 22f, glow = false)
     }
     Column(horizontalAlignment = Alignment.End) {
-        MonoLabel("ATHLETES", Label, k, 11f)
-        Text(
-            "${r.runnerCount}", color = accent, fontFamily = Mono,
-            fontWeight = FontWeight.Bold, fontSize = (20 * k).sp,
-        )
+        SoftLabel("ATHLETES", Label, k, 11f)
+        Glow("${r.runnerCount}", accent, k, 22f)
     }
 }
 
+/** 主要動作鈕：發光青色膠囊（個人資料「進入大廳」與房卡「報名」共用）。 */
 @Composable
-private fun JoinButton(k: Float, onClick: () -> Unit) = Row(
-    Modifier.fillMaxWidth().height((76 * k).dp)
-        .clip(RoundedCornerShape((2 * k).dp))
-        .background(Cyan)
+private fun PrimaryPill(text: String, k: Float, onClick: () -> Unit) = Row(
+    Modifier.fillMaxWidth().height((60 * k).dp)
+        .drawBehind {
+            // 兩層加寬的半透明底模擬光暈（畫在裁切之前，才能溢出按鈕邊緣）
+            listOf(8f * k to .08f, 4f * k to .18f).forEach { (g, a) ->
+                drawRoundRect(
+                    Cyan.copy(alpha = a), Offset(-g, -g), Size(size.width + g * 2f, size.height + g * 2f),
+                    CornerRadius(size.height / 2f + g),
+                )
+            }
+        }
+        .clip(RoundedCornerShape(50))
+        .background(Brush.verticalGradient(listOf(Color(0xFF6CF3F7), Cyan)))
         .clickable(onClick = onClick),
     horizontalArrangement = Arrangement.Center,
     verticalAlignment = Alignment.CenterVertically,
 ) {
-    Canvas(Modifier.size((14 * k).dp)) {
+    Canvas(Modifier.size((13 * k).dp)) {
+        val r = 2f * k
         drawPath(
-            Path().apply { moveTo(0f, 0f); lineTo(size.width, size.height / 2f); lineTo(0f, size.height); close() },
+            Path().apply { moveTo(r, 0f); lineTo(size.width, size.height / 2f); lineTo(r, size.height); close() },
             Carbon,
         )
     }
     Spacer(Modifier.width((12 * k).dp))
     Text(
-        "JOIN RACE", color = Carbon, fontFamily = Mono, fontWeight = FontWeight.Bold,
-        fontSize = (17 * k).sp, letterSpacing = (2.5 * k).sp,
+        text, color = Carbon, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
+        fontSize = (18 * k).sp, letterSpacing = (1.8 * k).sp, maxLines = 1,
     )
 }
 
 @Composable
 private fun LockedBox(text: String, accent: Color, k: Float) = Box(
-    Modifier.fillMaxWidth().height((76 * k).dp)
-        .clip(RoundedCornerShape((2 * k).dp))
-        .background(Color(0xFF0E171E))
-        .border((1 * k).dp, accent.copy(alpha = .45f), RoundedCornerShape((2 * k).dp)),
+    Modifier.fillMaxWidth().height((60 * k).dp)
+        .glass(k, accent.copy(alpha = .3f), Color.White.copy(alpha = .03f), radius = 50f),
     contentAlignment = Alignment.Center,
 ) {
     Text(
-        text, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
-        fontSize = (11 * k).sp, letterSpacing = (1.5 * k).sp, lineHeight = (16 * k).sp,
+        text, color = accent, fontFamily = Grotesk, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
+        fontSize = (12 * k).sp, letterSpacing = (1.2 * k).sp, lineHeight = (16 * k).sp,
     )
 }
 
 @Composable
 private fun LobbyFooter(s: RaceUiState, rooms: List<RoomInfo>, k: Float) = Row(
-    Modifier.fillMaxWidth().height((50 * k).dp).background(Color(0xFF070D12))
-        .padding(horizontal = (24 * k).dp),
+    Modifier.fillMaxWidth().height((52 * k).dp).drawBehind { softHairline(0f, k) },
     verticalAlignment = Alignment.CenterVertically,
 ) {
     val open = rooms.count { it.status == "OPEN" }
-    Box(Modifier.size((7 * k).dp).clip(RoundedCornerShape(50)).background(if (open > 0) Cyan else Muted))
+    val dot = if (open > 0) Cyan else Muted
+    Box(
+        Modifier.size((12 * k).dp).drawBehind {
+            drawCircle(dot.copy(alpha = .25f), radius = size.minDimension / 2f)
+            drawCircle(dot, radius = size.minDimension / 4f)
+        }
+    )
     Spacer(Modifier.width((10 * k).dp))
-    MonoLabel(
+    SoftLabel(
         if (rooms.isEmpty()) "NO RACES YET — WAITING FOR THE ORGANIZER TO OPEN A HEAT"
         else "${rooms.size} RACES · $open OPEN FOR ENTRY",
-        Label, k, 12f,
+        Label, k, 13f,
     )
     Spacer(Modifier.weight(1f))
-    MonoLabel(
+    SoftLabel(
         "TREADMILL LINK: " + if (s.treadmillConnected) beltStatusText(s.beltStatus) else "OFFLINE",
-        if (s.treadmillConnected) Label else Coral, k, 12f,
+        if (s.treadmillConnected) Label else Coral, k, 13f,
     )
-    Spacer(Modifier.width((16 * k).dp))
-    Box(Modifier.width((1 * k).dp).height((18 * k).dp).background(Hair))
-    Spacer(Modifier.width((16 * k).dp))
-    MonoLabel("AUTO-REFRESH 2.0S", Cyan, k, 13f)
+    Box(
+        Modifier.padding(horizontal = (16 * k).dp).width((1 * k).dp).height((18 * k).dp)
+            .background(Color.White.copy(alpha = .18f))
+    )
+    SoftLabel("AUTO-REFRESH 2.0S", Cyan.copy(alpha = .85f), k, 13f)
 }

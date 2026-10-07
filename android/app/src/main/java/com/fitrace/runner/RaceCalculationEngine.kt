@@ -109,3 +109,50 @@ class RaceCalculationEngine {
         }
     }
 }
+
+/** 起跑倒數的畫面階段：發令前逐秒倒數，槍響後短暫顯示 GO!，之後什麼都不畫。 */
+sealed interface CountdownPhase {
+    data object None : CountdownPhase
+    /** [secondsLeft] = ceil(剩餘毫秒 / 1000)，也就是頂列 T-n 顯示的 n。 */
+    data class Counting(val secondsLeft: Int) : CountdownPhase
+    data object Go : CountdownPhase
+}
+
+/** GO! 在槍響後停留的時間。 */
+const val GO_PHASE_MS = 1200L
+
+fun countdownPhase(startAt: Long?, now: Long): CountdownPhase = when {
+    startAt == null -> CountdownPhase.None
+    now < startAt -> CountdownPhase.Counting(((startAt - now + 999) / 1000).toInt())
+    now < startAt + GO_PHASE_MS -> CountdownPhase.Go
+    else -> CountdownPhase.None
+}
+
+enum class CountdownBeep { SHORT, LONG }
+
+const val COUNTDOWN_CUE_SECONDS = 5
+
+/**
+ * 階段轉換時該響哪一聲。呼叫端只在階段「改變」時呼叫一次（例如 LaunchedEffect(phase)），
+ * 因此每秒最多一聲短嗶。GO 的長嗶只在親眼看到倒數結束時響：斷線重連時伺服器會重送
+ * 已過去的 startAt，那時直接落在 Go 或 None，不該補嗶。
+ */
+fun countdownBeep(prev: CountdownPhase, next: CountdownPhase): CountdownBeep? = when {
+    next == prev -> null
+    // 只念 5..1：時鐘偏差會讓第一個 tick 短暫落在 ceil=6，那一下不該出聲
+    next is CountdownPhase.Counting -> if (next.secondsLeft in 1..COUNTDOWN_CUE_SECONDS) CountdownBeep.SHORT else null
+    next is CountdownPhase.Go && prev is CountdownPhase.Counting -> CountdownBeep.LONG
+    else -> null
+}
+
+private val SPOKEN_NUMBERS = listOf("Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten")
+
+/**
+ * 該階段要念的字。「Go!」而非「GO!」：全大寫可能被部分 TTS 引擎當縮寫念成 G-O。
+ * 秒數用英文單字而非阿拉伯數字，避免引擎依語系念成別的語言。
+ */
+fun countdownWord(phase: CountdownPhase): String = when (phase) {
+    is CountdownPhase.Counting -> SPOKEN_NUMBERS.getOrElse(phase.secondsLeft) { phase.secondsLeft.toString() }
+    CountdownPhase.Go -> "Go!"
+    CountdownPhase.None -> ""
+}

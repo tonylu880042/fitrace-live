@@ -46,6 +46,8 @@ class RaceClient(
         val pace: String,
         val status: String,
         val gapToLeaderMs: Long?,
+        /** 落後前一名的距離 ÷ 自己目前速度；領先者或速度為 0 時為 null */
+        val gapToAheadMs: Long? = null,
     )
 
     private val http = OkHttpClient()
@@ -230,6 +232,7 @@ class RaceClient(
                 pace = o.getString("pace"),
                 status = o.getString("status"),
                 gapToLeaderMs = if (o.isNull("gapToLeaderMs")) null else o.getLong("gapToLeaderMs"),
+                gapToAheadMs = if (!o.has("gapToAheadMs") || o.isNull("gapToAheadMs")) null else o.getLong("gapToAheadMs"),
             )
         }
     }
