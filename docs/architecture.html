@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FitRace Live Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: #F2F6F7;
+    --ink: #0F2229;
+    --muted: #54707A;
+    --panel: #E3ECEE;
+    --box: #FFFFFF;
+    --line: #A7BCC3;
+    --accent: #0A8792;
+    --accent-soft: rgba(10, 135, 146, .10);
+    --warn: #C92A48;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #061318;
+      --ink: #DCE9ED;
+      --muted: #88A3AD;
+      --panel: #0B1D24;
+      --box: #10272F;
+      --line: #2C4953;
+      --accent: #2FE3EC;
+      --accent-soft: rgba(47, 227, 236, .10);
+      --warn: #FF5C78;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #061318;
+    --ink: #DCE9ED;
+    --muted: #88A3AD;
+    --panel: #0B1D24;
+    --box: #10272F;
+    --line: #2C4953;
+    --accent: #2FE3EC;
+    --accent-soft: rgba(47, 227, 236, .10);
+    --warn: #FF5C78;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    padding-inline: 20px;
+    padding-block: 36px 64px;
+  }
+  main { max-width: 1180px; margin: 0 auto; display: grid; gap: 44px; }
+
+  header { display: grid; gap: 6px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  h1 { margin: 0; font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -.015em; text-wrap: balance; }
+  h2 { margin: 0 0 12px; font-size: 20px; font-weight: 600; text-wrap: balance; }
+  .lede { margin: 0; max-width: 68ch; color: var(--muted); }
+
+  figure { margin: 0; display: grid; gap: 12px; }
+  .scroll { overflow-x: auto; border-radius: 14px; }
+  svg.diagram { display: block; width: 100%; min-width: 860px; height: auto; color: var(--ink); }
+  figcaption { max-width: 78ch; color: var(--muted); font-size: 14px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .legend i { display: inline-block; width: 28px; height: 0; border-top: 2px solid var(--muted); }
+  .legend i.rt { border-top-color: var(--accent); }
+  .legend i.dev { border-top-style: dashed; }
+
+  /* SVG styling lives here, not inside the SVG */
+  .ctr { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+  .bx { fill: var(--box); stroke: var(--line); stroke-width: 1; }
+  .bx.hub { stroke: var(--accent); stroke-width: 1.5; }
+  .bx.dev { fill: none; stroke-dasharray: 5 4; }
+  .ct { fill: var(--ink); font: 700 15px var(--sans); }
+  .cs { fill: var(--muted); font: 400 11.5px var(--mono); }
+  .t  { fill: var(--ink); font: 600 13.5px var(--sans); }
+  .s  { fill: var(--muted); font: 400 11px var(--mono); }
+  .lb { fill: var(--muted); font: 500 10.5px var(--mono); }
+  .lb.rt { fill: var(--accent); }
+  .ln { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .ln.rt { stroke: var(--accent); stroke-width: 2; }
+  .ln.dev { stroke-dasharray: 5 4; }
+  .head { fill: var(--muted); }
+  .head.rt { fill: var(--accent); }
+  .st { fill: var(--box); stroke: var(--line); }
+  .st.live { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .sn { fill: var(--ink); font: 600 14px var(--mono); letter-spacing: .06em; }
+  .end { fill: var(--warn); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  td code, dd code, figcaption code, .lede code { font-family: var(--mono); font-size: .92em; }
+  td:first-child { white-space: nowrap; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  td:nth-child(2) code { color: var(--accent); font-weight: 500; }
+
+  .mech { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 22px 32px; margin: 0; }
+  .mech div { display: grid; gap: 4px; align-content: start; }
+  .mech dt { font-weight: 600; }
+  .mech dd { margin: 0; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">System architecture</div>
+    <h1>FitRace Live</h1>
+    <p class="lede">Cross-venue treadmill racing. Every treadmill console runs the Android runner app. One race server holds all race state in memory and pushes live rankings back to the runners and to the big screen at each venue.</p>
+  </header>
+
+  <section>
+    <h2>Components and data flow</h2>
+    <figure>
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 1200 720" role="img"
+             aria-label="Android treadmill apps and the venue big screen connect to one race server over REST and WebSocket; the server keeps all race state in memory and broadcasts leaderboards every 400 ms.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0,0 L10,5 L0,10 z"/>
+            </marker>
+            <marker id="ahrt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head rt" d="M0,0 L10,5 L0,10 z"/>
+            </marker>
+          </defs>
+
+          <!-- ── Android treadmill console ── -->
+          <rect class="ctr" x="20" y="40" width="360" height="580" rx="14"/>
+          <text class="ct" x="40" y="68">Treadmill console</text>
+          <text class="cs" x="40" y="87">Android app · one per treadmill</text>
+
+          <rect class="bx" x="50" y="110" width="300" height="56" rx="8"/>
+          <text class="t" x="68" y="134">FitOS treadmill service</text>
+          <text class="s" x="68" y="152">vendor process · AIDL (mock in dev)</text>
+
+          <rect class="bx" x="50" y="216" width="300" height="56" rx="8"/>
+          <text class="t" x="68" y="240">FitOSTreadmill</text>
+          <text class="s" x="68" y="258">binds · re-registers on binder death</text>
+
+          <rect class="bx" x="50" y="322" width="300" height="76" rx="8"/>
+          <text class="t" x="68" y="346">RaceViewModel + engine</text>
+          <text class="s" x="68" y="364">zero at gun · finish interpolation</text>
+          <text class="s" x="68" y="381">voice countdown · position alerts</text>
+
+          <rect class="bx" x="50" y="450" width="300" height="150" rx="8"/>
+          <text class="t" x="68" y="476">RaceClient</text>
+          <text class="s" x="68" y="496">OkHttp REST + WebSocket</text>
+          <text class="s" x="68" y="514">5 × PING → min-RTT clock offset</text>
+          <text class="s" x="68" y="532">reconnect with backoff (≤ 10 s)</text>
+
+          <line class="ln" x1="140" y1="167" x2="140" y2="213" marker-end="url(#ah)"/>
+          <text class="lb" x="132" y="194" text-anchor="end">metrics</text>
+          <line class="ln" x1="280" y1="215" x2="280" y2="169" marker-end="url(#ah)"/>
+          <text class="lb" x="288" y="194">set speed</text>
+
+          <line class="ln" x1="200" y1="273" x2="200" y2="319" marker-end="url(#ah)"/>
+          <text class="lb" x="208" y="300">TreadmillReading</text>
+
+          <line class="ln" x1="140" y1="399" x2="140" y2="447" marker-end="url(#ah)"/>
+          <text class="lb" x="132" y="428" text-anchor="end">telemetry</text>
+          <line class="ln" x1="280" y1="449" x2="280" y2="401" marker-end="url(#ah)"/>
+          <text class="lb" x="288" y="428">events</text>
+
+          <!-- ── Race server ── -->
+          <rect class="ctr" x="450" y="40" width="380" height="580" rx="14"/>
+          <text class="ct" x="470" y="68">Race server</text>
+          <text class="cs" x="470" y="87">Rust · axum · tokio · :8080</text>
+
+          <rect class="bx" x="480" y="110" width="320" height="56" rx="8"/>
+          <text class="t" x="498" y="134">REST API</text>
+          <text class="s" x="498" y="152">/rooms · /rooms/{id}/tokens · /admin/*</text>
+
+          <rect class="bx" x="480" y="216" width="320" height="64" rx="8"/>
+          <text class="t" x="498" y="241">AppState — in memory, one Mutex</text>
+          <text class="s" x="498" y="260">rooms · runners · tokens · rules</text>
+
+          <rect class="bx" x="480" y="330" width="150" height="60" rx="8"/>
+          <text class="t" x="494" y="355">broadcast_loop</text>
+          <text class="s" x="494" y="374">per room · 400 ms</text>
+
+          <rect class="bx" x="650" y="330" width="125" height="60" rx="8"/>
+          <text class="t" x="664" y="355">scheduler_task</text>
+          <text class="s" x="664" y="374">every 1 s</text>
+
+          <rect class="bx hub" x="480" y="450" width="320" height="150" rx="8"/>
+          <text class="t" x="498" y="476">WebSocket  /ws?token=…</text>
+          <text class="s" x="498" y="496">RUNNER token → read + write</text>
+          <text class="s" x="498" y="514">DISPLAY token → read only</text>
+          <text class="s" x="498" y="532">runnerId / roomId must match token</text>
+          <text class="s" x="498" y="550">per-room broadcast channel</text>
+
+          <line class="ln" x1="640" y1="167" x2="640" y2="213" marker-end="url(#ah)"/>
+          <text class="lb" x="648" y="194">register · admin writes</text>
+
+          <line class="ln" x1="555" y1="281" x2="555" y2="327" marker-end="url(#ah)"/>
+          <text class="lb" x="547" y="308" text-anchor="end">snapshot</text>
+
+          <line class="ln" x1="712" y1="329" x2="712" y2="283" marker-end="url(#ah)"/>
+          <text class="lb" x="704" y="308" text-anchor="end">open · auto-start</text>
+
+          <line class="ln rt" x1="555" y1="391" x2="555" y2="447" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="563" y="414">LEADERBOARD_UPDATE</text>
+
+          <line class="ln rt" x1="790" y1="449" x2="790" y2="283" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="782" y="438" text-anchor="end">apply TELEMETRY</text>
+
+          <!-- ── Browsers ── -->
+          <rect class="ctr" x="900" y="40" width="280" height="580" rx="14"/>
+          <text class="ct" x="920" y="68">Browsers</text>
+          <text class="cs" x="920" y="87">pages served by the race server</text>
+
+          <rect class="bx" x="920" y="110" width="240" height="56" rx="8"/>
+          <text class="t" x="938" y="134">Organizer console</text>
+          <text class="s" x="938" y="152">admin.html · Bearer key</text>
+
+          <rect class="bx" x="920" y="450" width="240" height="150" rx="8"/>
+          <text class="t" x="938" y="476">Venue big screen</text>
+          <text class="s" x="938" y="496">display.html</text>
+          <text class="s" x="938" y="514">ranks · gaps · pace</text>
+          <text class="s" x="938" y="532">DISPLAY token (read only)</text>
+
+          <!-- ── Cross-component edges ── -->
+          <path class="ln" d="M351,462 H412 V138 H477" marker-end="url(#ah)"/>
+          <text class="lb" transform="rotate(-90 403 300)" x="403" y="300" text-anchor="middle">POST /rooms/{id}/tokens · GET /rooms</text>
+
+          <line class="ln rt" x1="352" y1="494" x2="477" y2="494" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="415" y="486" text-anchor="middle">TELEMETRY · PING</text>
+          <line class="ln rt" x1="478" y1="548" x2="353" y2="548" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="415" y="540" text-anchor="middle">LEADERBOARD · RACE_*</text>
+
+          <line class="ln" x1="918" y1="138" x2="803" y2="138" marker-end="url(#ah)"/>
+          <text class="lb" x="861" y="130" text-anchor="middle">/admin/*</text>
+
+          <line class="ln rt" x1="802" y1="494" x2="917" y2="494" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="860" y="486" text-anchor="middle">LEADERBOARD</text>
+          <line class="ln rt" x1="918" y1="548" x2="803" y2="548" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="860" y="540" text-anchor="middle">PING</text>
+
+          <!-- ── Dev tool ── -->
+          <rect class="bx dev" x="450" y="652" width="380" height="50" rx="8"/>
+          <text class="t" x="470" y="682">mock_runner</text>
+          <text class="s" x="572" y="682">dev tool · simulated runners</text>
+          <line class="ln rt dev" x1="640" y1="651" x2="640" y2="603" marker-end="url(#ahrt)"/>
+          <text class="lb rt" x="648" y="632">same protocol</text>
+        </svg>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="rt"></i>real-time WebSocket traffic</span>
+        <span><i></i>HTTP or in-process call</span>
+        <span><i class="dev"></i>development only</span>
+      </div>
+      <figcaption>Real-time traffic runs only over the WebSocket hub. Runners send telemetry at 2.5 Hz, and each room's <code>broadcast_loop</code> ranks a snapshot of state every 400 ms and pushes it to every subscriber. REST is used only for the lobby list, issuing tokens and organizer actions.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Race lifecycle</h2>
+    <figure>
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 1200 250" role="img"
+             aria-label="A room moves OPEN, STARTING, RUNNING, FINISHED; an open room can be deleted, and a finished room is removed after 10 minutes.">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0,0 L10,5 L0,10 z"/>
+            </marker>
+          </defs>
+
+          <rect class="st" x="30" y="60" width="180" height="70" rx="10"/>
+          <text class="sn" x="120" y="92" text-anchor="middle">OPEN</text>
+          <text class="s" x="120" y="112" text-anchor="middle">registration open</text>
+
+          <rect class="st" x="340" y="60" width="180" height="70" rx="10"/>
+          <text class="sn" x="430" y="92" text-anchor="middle">STARTING</text>
+          <text class="s" x="430" y="112" text-anchor="middle">5 s countdown</text>
+
+          <rect class="st live" x="650" y="60" width="180" height="70" rx="10"/>
+          <text class="sn" x="740" y="92" text-anchor="middle">RUNNING</text>
+          <text class="s" x="740" y="112" text-anchor="middle">telemetry accepted</text>
+
+          <rect class="st" x="960" y="60" width="180" height="70" rx="10"/>
+          <text class="sn" x="1050" y="92" text-anchor="middle">FINISHED</text>
+          <text class="s" x="1050" y="112" text-anchor="middle">unfinished runners → DNF</text>
+
+          <line class="ln" x1="212" y1="95" x2="337" y2="95" marker-end="url(#ah2)"/>
+          <text class="lb" x="275" y="76" text-anchor="middle">admin start or</text>
+          <text class="lb" x="275" y="89" text-anchor="middle">rule auto-start</text>
+
+          <line class="ln" x1="522" y1="95" x2="647" y2="95" marker-end="url(#ah2)"/>
+          <text class="lb" x="585" y="76" text-anchor="middle">start time</text>
+          <text class="lb" x="585" y="89" text-anchor="middle">reached</text>
+
+          <line class="ln" x1="832" y1="95" x2="957" y2="95" marker-end="url(#ah2)"/>
+          <text class="lb" x="895" y="76" text-anchor="middle">all finished,</text>
+          <text class="lb" x="895" y="89" text-anchor="middle">cutoff or end</text>
+
+          <line class="ln" x1="120" y1="132" x2="120" y2="186" marker-end="url(#ah2)"/>
+          <circle class="end" cx="120" cy="198" r="7"/>
+          <text class="lb" x="136" y="202">deleted → RACE_CANCELLED</text>
+
+          <line class="ln" x1="1050" y1="132" x2="1050" y2="186" marker-end="url(#ah2)"/>
+          <circle class="end" cx="1050" cy="198" r="7"/>
+          <text class="lb" x="1034" y="202" text-anchor="end">removed 10 min after close</text>
+        </svg>
+      </div>
+      <figcaption>Room status is never stored. It is derived from <code>startAt</code>, <code>closedAt</code> and the current time, so the lobby, admin console and scheduler can never disagree about it.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>WebSocket messages</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Direction</th><th>Message</th><th>When and what</th></tr></thead>
+        <tbody>
+          <tr><td>client → server</td><td><code>PING</code></td><td>5 samples on connect; the sample with the smallest round trip sets the clock offset.</td></tr>
+          <tr><td>client → server</td><td><code>TELEMETRY</code></td><td>Every 400 ms: race distance, speed, cadence, pace and finish time once crossed.</td></tr>
+          <tr><td>server → client</td><td><code>PONG</code></td><td>Echoes the client send time plus the server time.</td></tr>
+          <tr><td>server → client</td><td><code>RACE_SCHEDULED</code></td><td>Start time, distance and cutoff. Sent on start and re-sent to anyone who connects later.</td></tr>
+          <tr><td>server → client</td><td><code>LEADERBOARD_UPDATE</code></td><td>Every 400 ms: rank, distance, pace, status and gaps to the leader and to the runner ahead.</td></tr>
+          <tr><td>server → client</td><td><code>RACE_CLOSED</code></td><td>Reason <code>ALL_FINISHED</code>, <code>CUTOFF</code> or <code>ORGANIZER</code>.</td></tr>
+          <tr><td>server → client</td><td><code>RACE_CANCELLED</code></td><td>An open room was deleted by the organizer.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Mechanisms that keep venues fair</h2>
+    <dl class="mech">
+      <div><dt>One clock</dt><dd>Every device converts to server time using its min-RTT offset, so all venues see the same gun and the same finish times.</dd></div>
+      <div><dt>Zero at the gun</dt><dd>The app records the treadmill's odometer at the start time and counts only distance after it. A service restart that resets the odometer is detected and bridged.</dd></div>
+      <div><dt>No warm-up</dt><dd>Speed keys unlock only at the start. Between joining and the gun, any belt movement is commanded back to 0, so nobody gets a flying start.</dd></div>
+      <div><dt>Exact finish time</dt><dd>The finish time is interpolated between the two samples that straddle the line, instead of taking the later sample's timestamp.</dd></div>
+      <div><dt>Trust boundary</dt><dd>Telemetry is accepted only when its <code>runnerId</code> and <code>roomId</code> match the token; display tokens can never write.</dd></div>
+      <div><dt>Reconnect-safe</dt><dd>A replayed <code>RACE_SCHEDULED</code> with the same start time is recognised and ignored, so a dropped connection never resets distance or a finish.</dd></div>
+      <div><dt>Audible start</dt><dd>A full-screen countdown with a spoken “Five … One, Go!” plays, with a beep fallback on consoles without a speech engine.</dd></div>
+      <div><dt>Position alerts</dt><dd>From each leaderboard the app works out whether you lead, are catching the runner ahead, or are being caught. Time-gap hysteresis and cooldowns keep it from flickering; a pictogram card and a voice cue announce it.</dd></div>
+    </dl>
+  </section>
+</main>
+</body>
+</html>
