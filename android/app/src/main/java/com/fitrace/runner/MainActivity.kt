@@ -409,14 +409,15 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
                     distance = 0.0,
                     pace = "--'--\"",
                     cadence = 0,
-                    rank = 1,
+                    rank = 6,
                     fieldSize = 5,
-                    gapToLeaderM = 0.0,
+                    gapToLeaderM = 3650.0,
                     gapToNeighbourM = null,
-                    leaderDistanceM = 0.0,
+                    leaderDistanceM = 3650.0,
                     beltStatus = BeltStatus.IDLE,
                     viewMode = if (cockpitMode) RaceViewMode.COCKPIT else RaceViewMode.LEADERBOARD,
                     leaderboard = sampleBoard,
+                    tension = Tension(lastRank = 6, lastField = 5),
                 )
             }
         } else {
@@ -452,19 +453,40 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         }
     }
 
-    fun setVerificationRunningMetrics(speedKmh: Float, distanceM: Double, cadence: Int = 182, pace: String = "03'45\"") {
+    fun setVerificationRunningMetrics(speedKmh: Float, distanceM: Double) {
+        val s = _state.value
+        val now = serverNow()
+        val raceDist = s.raceDistanceM.takeIf { it > 0.0 } ?: 5000.0
+        val updatedBoard = sampleLeaderboard(s.profile.runnerId, distanceM, raceDist)
+        val sorted = updatedBoard.sortedBy { it.rank }
+        val myIndex = sorted.indexOfFirst { it.runnerId == s.profile.runnerId }
+        val me = sorted.getOrNull(myIndex)
+        val neighbour = if (myIndex == 0) sorted.getOrNull(1) else sorted.getOrNull(myIndex - 1)
+        val gapToLeader = me?.let { (sorted.firstOrNull()?.distance ?: it.distance) - it.distance }
+        val standing = standingOf(sorted, s.profile.runnerId)
+        val active = s.canAdjustSpeed(now)
+        val tension = RaceTension.next(s.tension, standing, active = active, nowMs = now)
+
+        val secPerKm = if (speedKmh > 0.5f) (3600.0 / speedKmh).roundToInt() else 0
+        val calcPace = if (speedKmh > 0.5f) "%02d'%02d\"".format(secPerKm / 60, secPerKm % 60) else "--'--\""
+        val calcCadence = if (speedKmh > 0.5f) (152 + (speedKmh * 2.1f).toInt()).coerceIn(160, 205) else 0
+
         _state.update { current ->
             current.copy(
                 speedKmh = speedKmh,
                 targetSpeed = speedKmh,
                 distance = distanceM,
-                cadence = cadence,
-                pace = pace,
-                beltStatus = BeltStatus.RUNNING,
-                rank = 2,
-                gapToLeaderM = 320.0,
-                gapToNeighbourM = 110.0,
-                leaderDistanceM = distanceM + 320.0,
+                cadence = calcCadence,
+                pace = calcPace,
+                beltStatus = if (speedKmh > 0.1f) BeltStatus.RUNNING else BeltStatus.IDLE,
+                rank = me?.rank ?: current.rank,
+                fieldSize = sorted.size,
+                leaderboard = sorted,
+                gapToLeaderM = gapToLeader,
+                gapToNeighbourM = if (me != null && neighbour != null) neighbour.distance - me.distance else null,
+                leaderDistanceM = sorted.firstOrNull()?.distance,
+                standing = standing,
+                tension = tension,
             )
         }
     }
@@ -657,6 +679,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             current.copy(
                 fieldSize = newField,
                 newRunnerAlert = RunnerJoinedAlert(event, System.currentTimeMillis(), seq),
+                tension = current.tension.copy(lastField = newField),
             )
         }
     }
