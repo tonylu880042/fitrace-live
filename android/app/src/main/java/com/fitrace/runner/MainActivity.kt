@@ -105,6 +105,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import kotlin.math.abs
@@ -361,12 +362,15 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     fun serverNow(): Long = client?.serverNow() ?: System.currentTimeMillis()
 
     fun setViewMode(mode: RaceViewMode) {
-        _state.value = _state.value.copy(viewMode = mode)
+        _state.update { it.copy(viewMode = mode) }
     }
 
     fun toggleViewMode() {
-        val next = if (_state.value.viewMode == RaceViewMode.COCKPIT) RaceViewMode.LEADERBOARD else RaceViewMode.COCKPIT
-        _state.value = _state.value.copy(viewMode = next)
+        _state.update { current ->
+            val next = if (current.viewMode == RaceViewMode.COCKPIT) RaceViewMode.LEADERBOARD else RaceViewMode.COCKPIT
+            android.util.Log.d("RaceVM", "toggleViewMode: $current -> $next")
+            current.copy(viewMode = next)
+        }
     }
 
     fun enterVerificationRace(profile: Profile? = null, cockpitMode: Boolean = false) {
@@ -408,7 +412,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         if (!_state.value.canAdjustSpeed(serverNow())) return
         val target = (_state.value.targetSpeed + delta).coerceIn(0f, SPEED_MAX_KMH)
         treadmill.setTargetSpeed(target)
-        _state.value = _state.value.copy(targetSpeed = target)
+        _state.update { it.copy(targetSpeed = target, speedKmh = target) }
     }
 
     private fun onMetric(metric: TreadmillReading) {
@@ -419,10 +423,14 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             // app 的速度鍵已鎖，這裡再擋機台實體按鍵——只在已報名、發令前（inPreRace）皮帶一動就下令歸零；大廳、個人檔案、完賽後緩跑都不干預。
             // 用 inPreRace 而非 isArmed 判斷，避免發令瞬間 arm() 還沒執行就把剛起步的皮帶停掉。
             if (metric.speedKmh > 0.1f && s.inPreRace(serverNow())) treadmill.setTargetSpeed(0f)
-            _state.value = s.copy(
-                speedKmh = metric.speedKmh, cadence = metric.cadence, incline = metric.incline,
-                beltStatus = metric.status,
-            )
+            _state.update { current ->
+                current.copy(
+                    speedKmh = if (current.speedKmh > 0.5f) current.speedKmh else metric.speedKmh,
+                    cadence = if (current.cadence > 0) current.cadence else metric.cadence,
+                    incline = metric.incline,
+                    beltStatus = metric.status,
+                )
+            }
             return
         }
         val sample = engine.update(
@@ -433,18 +441,20 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             treadmill.setTargetSpeed(0f)
             0f
         } else s.targetSpeed
-        _state.value = s.copy(
-            speedKmh = metric.speedKmh,
-            targetSpeed = target,
-            incline = metric.incline,
-            beltStatus = metric.status,
-            distance = sample.raceDistanceM,
-            pace = sample.pace,
-            cadence = sample.cadence,
-            finishTimeMs = sample.finishTimeMs,
-            // 撞線當下就收起名次提示，不等下一筆榜單
-            tension = if (sample.justFinished) RaceTension.next(s.tension, null, false, serverNow()) else s.tension,
-        )
+        _state.update { current ->
+            current.copy(
+                speedKmh = metric.speedKmh,
+                targetSpeed = target,
+                incline = metric.incline,
+                beltStatus = metric.status,
+                distance = sample.raceDistanceM,
+                pace = sample.pace,
+                cadence = sample.cadence,
+                finishTimeMs = sample.finishTimeMs,
+                // 撞線當下就收起名次提示，不等下一筆榜單
+                tension = if (sample.justFinished) RaceTension.next(current.tension, null, false, serverNow()) else current.tension,
+            )
+        }
     }
 
     /** 本地 10Hz 供儀表板刷新，對雲端節流到 2.5Hz（§2.2-4）。 */
@@ -532,20 +542,22 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         val neighbour = if (myIndex == 0) sorted.getOrNull(1) else sorted.getOrNull(myIndex - 1)
         val gapToLeader = me?.let { (sorted.firstOrNull()?.distance ?: it.distance) - it.distance }
         val previous = _state.value.gapToLeaderM
-        _state.value = _state.value.copy(
-            rank = me?.rank,
-            fieldSize = sorted.size,
-            leaderboard = sorted,
-            gapToLeaderM = gapToLeader,
-            gapToNeighbourM = if (me != null && neighbour != null) neighbour.distance - me.distance else null,
-            leaderDistanceM = sorted.firstOrNull()?.distance,
-            // 與上一次廣播相比差距是否縮小；差距變化小於一公尺視為持平
-            closingOnLeader = if (gapToLeader != null && previous != null &&
-                kotlin.math.abs(gapToLeader - previous) >= 1.0
-            ) gapToLeader < previous else null,
-            standing = standing,
-            tension = tension,
-        )
+        _state.update { current ->
+            current.copy(
+                rank = me?.rank,
+                fieldSize = sorted.size,
+                leaderboard = sorted,
+                gapToLeaderM = gapToLeader,
+                gapToNeighbourM = if (me != null && neighbour != null) neighbour.distance - me.distance else null,
+                leaderDistanceM = sorted.firstOrNull()?.distance,
+                // 與上一次廣播相比差距是否縮小；差距變化小於一公尺視為持平
+                closingOnLeader = if (gapToLeader != null && previous != null &&
+                    kotlin.math.abs(gapToLeader - previous) >= 1.0
+                ) gapToLeader < previous else null,
+                standing = standing,
+                tension = tension,
+            )
+        }
     }
 
     override fun onRaceClosed(reason: String) {
@@ -622,12 +634,26 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(newIntent: android.content.Intent) {
         super.onNewIntent(newIntent)
         setIntent(newIntent)
+        if (newIntent.getBooleanExtra("verify_runner_cockpit", false)) {
+            vmRef?.enterVerificationRace(cockpitMode = true)
+        }
+        if (newIntent.getBooleanExtra("verify_runner_leaderboard", false)) {
+            vmRef?.enterVerificationRace(cockpitMode = false)
+        }
         if (newIntent.getBooleanExtra("verify_runner_alert", false)) {
             vmRef?.triggerMockRunnerJoinedAlert()
         }
-        if (newIntent.getBooleanExtra("verify_runner_cockpit", false)) {
-            vmRef?.enterVerificationRace(cockpitMode = true)
-            vmRef?.triggerMockRunnerJoinedAlert()
+        if (newIntent.getBooleanExtra("toggle_view_mode", false)) {
+            vmRef?.toggleViewMode()
+        }
+        if (newIntent.getStringExtra("set_view_mode") == "leaderboard") {
+            vmRef?.setViewMode(RaceViewMode.LEADERBOARD)
+        }
+        if (newIntent.getStringExtra("set_view_mode") == "cockpit") {
+            vmRef?.setViewMode(RaceViewMode.COCKPIT)
+        }
+        if (newIntent.hasExtra("nudge_speed")) {
+            vmRef?.nudgeSpeed(newIntent.getFloatExtra("nudge_speed", 1.0f))
         }
     }
 
@@ -639,14 +665,13 @@ class MainActivity : ComponentActivity() {
                 vmRef = vm
                 LaunchedEffect(Unit) {
                     if (intent?.getBooleanExtra("verify_leaderboard", false) == true) {
-                        vm.enterVerificationRace()
-                    }
-                    if (intent?.getBooleanExtra("verify_runner_alert", false) == true) {
-                        vm.enterVerificationRace()
-                        vm.triggerMockRunnerJoinedAlert()
+                        vm.enterVerificationRace(cockpitMode = false)
                     }
                     if (intent?.getBooleanExtra("verify_runner_cockpit", false) == true) {
                         vm.enterVerificationRace(cockpitMode = true)
+                    }
+                    if (intent?.getBooleanExtra("verify_runner_alert", false) == true) {
+                        vm.enterVerificationRace()
                         vm.triggerMockRunnerJoinedAlert()
                     }
                 }
