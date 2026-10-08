@@ -212,6 +212,8 @@ data class RaceUiState(
     val notifiedPodiumRanks: Set<Int> = emptySet(),
     /** 比賽關閉時間戳記（用於 30 秒自動返回大廳倒數） */
     val closedAtMs: Long? = null,
+    /** 是否顯示離開並關閉應用程式的確認對話框 */
+    val showExitDialog: Boolean = false,
 ) {
     /** 可以離開回大廳：尚未發令，或自己已完賽，或比賽已關閉。比賽中不給一鍵離開，免得誤觸。 */
     val canLeave: Boolean get() = startAtServerTime == null || finishTimeMs != null || closed
@@ -905,6 +907,17 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         }
     }
 
+    fun setExitDialogVisible(visible: Boolean) {
+        _state.update { it.copy(showExitDialog = visible) }
+    }
+
+    fun exitApp(activity: android.app.Activity?) {
+        main.removeCallbacksAndMessages(null)
+        treadmill.disconnect()
+        client?.close()
+        activity?.finishAffinity()
+    }
+
     override fun onCleared() {
         main.removeCallbacksAndMessages(null)
         treadmill.disconnect()
@@ -945,6 +958,9 @@ class MainActivity : ComponentActivity() {
             val finished = newIntent.getBooleanExtra("user_finished", true)
             val rank = newIntent.getIntExtra("user_rank", 2)
             vmRef?.triggerMockFinalResults(userFinished = finished, userRank = rank)
+        }
+        if (newIntent.getBooleanExtra("verify_exit_dialog", false)) {
+            vmRef?.setExitDialogVisible(true)
         }
         if (newIntent.hasExtra("sim_speed")) {
             val spd = newIntent.getFloatExtra("sim_speed", 16.0f)
@@ -991,6 +1007,9 @@ class MainActivity : ComponentActivity() {
                         val finished = intent?.getBooleanExtra("user_finished", true) ?: true
                         val rank = intent?.getIntExtra("user_rank", 2) ?: 2
                         vm.triggerMockFinalResults(userFinished = finished, userRank = rank)
+                    }
+                    if (intent?.getBooleanExtra("verify_exit_dialog", false) == true) {
+                        vm.setExitDialogVisible(true)
                     }
                 }
                 val state by vm.state.collectAsState()
@@ -4039,6 +4058,8 @@ private val STATUS_ORDER = listOf("OPEN", "STARTING", "RUNNING", "FINISHED")
 
 @Composable
 private fun Lobby(s: RaceUiState, vm: RaceViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? android.app.Activity
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) { now = System.currentTimeMillis(); delay(200) }
@@ -4073,6 +4094,18 @@ private fun Lobby(s: RaceUiState, vm: RaceViewModel) {
                 }
             }
             LobbyFooter(s, rooms, k)
+        }
+
+        // 離開並關閉應用程式確認對話框
+        if (s.showExitDialog) {
+            ExitAppConfirmDialog(
+                k = k,
+                onDismiss = { vm.setExitDialogVisible(false) },
+                onConfirmExit = {
+                    vm.setExitDialogVisible(false)
+                    vm.exitApp(activity)
+                },
+            )
         }
     }
 }
@@ -4117,8 +4150,216 @@ private fun LobbyTopBar(s: RaceUiState, vm: RaceViewModel, k: Float) = Row(
         ) { SoftLabel("EDIT PROFILE", Color.White, k, 12f) }
     }
 
-    Spacer(Modifier.width((24 * k).dp))
+    Spacer(Modifier.width((20 * k).dp))
     StatusDot("RACE SERVER · " + if (s.lobbyOnline) "ONLINE" else "OFFLINE", s.lobbyOnline, k)
+
+    Spacer(Modifier.width((20 * k).dp))
+    // 離開程式按鈕
+    Box(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(Coral.copy(alpha = 0.12f))
+            .border((1 * k).dp, Coral.copy(alpha = 0.55f), RoundedCornerShape(50))
+            .clickable { vm.setExitDialogVisible(true) }
+            .padding(horizontal = (16 * k).dp, vertical = (8 * k).dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("⏻", color = Coral, fontSize = (13 * k).sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width((6 * k).dp))
+            SoftLabel("EXIT APP", Coral, k, 12f)
+        }
+    }
+}
+
+/* ── 離開並關閉應用程式確認對話框（Google Stitch 戰術彈卡風格） ── */
+
+@Composable
+private fun BoxScope.ExitAppConfirmDialog(
+    k: Float,
+    onDismiss: () -> Unit,
+    onConfirmExit: () -> Unit,
+) {
+    // 全螢幕半透明遮罩
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        val cutPx = 18f * k
+        val cardShape = remember(cutPx) { ChamferCutShape(cutPx) }
+
+        Box(
+            Modifier.width((560 * k).dp)
+                .clickable(enabled = false) {}
+                .clip(cardShape)
+                .background(Color(0xF50D1117))
+                .border((1.8f * k).dp, Coral.copy(alpha = 0.85f), cardShape)
+                .drawBehind {
+                    val bLen = 20f * k
+                    val bStroke = 3f * k
+                    // Top-Left
+                    drawLine(Coral, Offset(0f, 0f), Offset(bLen, 0f), strokeWidth = bStroke)
+                    drawLine(Coral, Offset(0f, 0f), Offset(0f, bLen), strokeWidth = bStroke)
+                    // Top-Right
+                    drawLine(Coral, Offset(size.width, 0f), Offset(size.width - bLen, 0f), strokeWidth = bStroke)
+                    drawLine(Coral, Offset(size.width, 0f), Offset(size.width, bLen), strokeWidth = bStroke)
+                    // Bottom-Left
+                    drawLine(Coral, Offset(0f, size.height), Offset(bLen, size.height), strokeWidth = bStroke)
+                    drawLine(Coral, Offset(0f, size.height), Offset(0f, size.height - bLen), strokeWidth = bStroke)
+                    // Bottom-Right
+                    drawLine(Coral, Offset(size.width, size.height), Offset(size.width - bLen, size.height), strokeWidth = bStroke)
+                    drawLine(Coral, Offset(size.width, size.height), Offset(size.width, size.height - bLen), strokeWidth = bStroke)
+                }
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                // 1. 頂部狀態列
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((48 * k).dp)
+                        .background(Color(0xFF160E14))
+                        .padding(horizontal = (18 * k).dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size((8 * k).dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Coral)
+                        )
+                        Spacer(Modifier.width((8 * k).dp))
+                        Text(
+                            text = "SYSTEM POWER CONTROL",
+                            color = Coral,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (12 * k).sp,
+                            letterSpacing = (1.5 * k).sp,
+                        )
+                    }
+
+                    Box(
+                        Modifier.clip(RoundedCornerShape((4 * k).dp))
+                            .background(Coral.copy(alpha = 0.15f))
+                            .border((1 * k).dp, Coral.copy(alpha = 0.4f), RoundedCornerShape((4 * k).dp))
+                            .padding(horizontal = (8 * k).dp, vertical = (3 * k).dp),
+                    ) {
+                        Text(
+                            text = "TERMINATE APP",
+                            color = Coral,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = (11 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Coral.copy(alpha = 0.35f)))
+
+                // 2. 對話內容主體
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = (24 * k).dp, vertical = (22 * k).dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("⏻", color = Coral, fontSize = (28 * k).sp)
+                        Spacer(Modifier.width((14 * k).dp))
+                        Column {
+                            Text(
+                                text = "EXIT FITRACE LIVE?",
+                                color = Color.White,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (22 * k).sp,
+                                letterSpacing = (-0.3 * k).sp,
+                            )
+                            Spacer(Modifier.height((2 * k).dp))
+                            Text(
+                                text = "確定要離開並關閉 FitRace 應用程式嗎？",
+                                color = Label,
+                                fontFamily = Grotesk,
+                                fontSize = (13 * k).sp,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height((16 * k).dp))
+
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape((8 * k).dp))
+                            .background(Color(0xFF070B0E))
+                            .border((1 * k).dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape((8 * k).dp))
+                            .padding((14 * k).dp),
+                    ) {
+                        Text(
+                            text = "• 跑步機 AIDL 服務將安全斷開連接\n• 即時連線與後台排程輪詢將安全關閉\n• 再次點擊桌面圖示即可重新啟動程式",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontFamily = Grotesk,
+                            fontSize = (12 * k).sp,
+                            lineHeight = (18 * k).sp,
+                        )
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Color.White.copy(alpha = 0.10f)))
+
+                // 3. 底部按鈕列
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((64 * k).dp)
+                        .background(Color(0xFF0F141C))
+                        .padding(horizontal = (20 * k).dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 取消按鈕
+                    Box(
+                        Modifier.clip(RoundedCornerShape((6 * k).dp))
+                            .background(Color(0xFF1B242C))
+                            .border((1 * k).dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape((6 * k).dp))
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = (20 * k).dp, vertical = (10 * k).dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "CANCEL · 取消",
+                            color = Color.White,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = (13 * k).sp,
+                            letterSpacing = (0.5 * k).sp,
+                        )
+                    }
+
+                    Spacer(Modifier.width((14 * k).dp))
+
+                    // 確認離開關閉按鈕
+                    Box(
+                        Modifier.clip(RoundedCornerShape((6 * k).dp))
+                            .background(Coral)
+                            .clickable(onClick = onConfirmExit)
+                            .padding(horizontal = (22 * k).dp, vertical = (10 * k).dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("⏻", color = Carbon, fontSize = (14 * k).sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width((6 * k).dp))
+                            Text(
+                                text = "EXIT APP · 關閉應用",
+                                color = Carbon,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = (13 * k).sp,
+                                letterSpacing = (0.8 * k).sp,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

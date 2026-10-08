@@ -177,4 +177,19 @@ class RaceEndgameTest {
         // 尚未鳴槍起跑前（STANDBY）：允許取消離開
         assertTrue(RaceUiState(screen = Screen.RACE, startAtServerTime = null).canLeave)
     }
+
+    // ── 大廳離開應用程式確認狀態 ──
+
+    @Test
+    fun `showExitDialog toggles correctly in lobby state`() {
+        val lobbyDefault = RaceUiState(screen = Screen.LOBBY)
+        assertFalse(lobbyDefault.showExitDialog)
+
+        val dialogOpened = lobbyDefault.copy(showExitDialog = true)
+        assertTrue(dialogOpened.showExitDialog)
+
+        val dialogClosed = dialogOpened.copy(showExitDialog = false)
+        assertFalse(dialogClosed.showExitDialog)
+    }
 }
+
