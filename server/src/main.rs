@@ -58,6 +58,7 @@ struct Room {
     closed_at_ms: Option<i64>,
     auto_start_at_ms: Option<i64>,
     rule_id: Option<String>,
+    finish_countdown_cutoff_ms: Option<i64>,
 }
 
 #[derive(Default)]
@@ -426,6 +427,7 @@ async fn start_race(
     let cutoff_at = start_at + room.cutoff_ms;
     room.start_at_ms = Some(start_at);
     room.auto_start_at_ms = None;
+    room.finish_countdown_cutoff_ms = None;
     for r in room.runners.values_mut() {
         r.distance = 0.0;
         r.pace = "--'--\"".to_string();
@@ -792,6 +794,7 @@ async fn scheduler_task(st: Arc<AppState>) {
             let start_at = now + COUNTDOWN_MS;
             room.start_at_ms = Some(start_at);
             room.auto_start_at_ms = None;
+            room.finish_countdown_cutoff_ms = None;
             let _ = room.tx.send(
                 serde_json::to_string(&ServerMsg::RaceScheduled {
                     room_id: room_id.clone(),
@@ -936,6 +939,7 @@ fn create_room(st: &Arc<AppState>, title: String, distance_m: f64, capacity: Opt
             closed_at_ms: None,
             auto_start_at_ms: None,
             rule_id: None,
+            finish_countdown_cutoff_ms: None,
         },
     );
     drop(rooms);
@@ -961,12 +965,29 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
                 let status = room_status(room.closed_at_ms, room.start_at_ms, now);
                 let should_close = match status {
                     RoomStatus::Running => {
-                        // 全員完賽或超過Cutoff時間
+                        // 步驟 9：首位選手完賽時，啟動 100 秒衝刺關門倒數
+                        let has_finisher = room.runners.values().any(|r| r.finish_time_ms.is_some());
+                        if has_finisher && room.finish_countdown_cutoff_ms.is_none() {
+                            let sprint_cutoff = now + 100_000;
+                            room.finish_countdown_cutoff_ms = Some(sprint_cutoff);
+                            let _ = room.tx.send(
+                                serde_json::to_string(&ServerMsg::RaceScheduled {
+                                    room_id: room_id.clone(),
+                                    start_at_server_time: room.start_at_ms.unwrap(),
+                                    race_distance_meters: room.race_distance_m,
+                                    cutoff_at_server_time: sprint_cutoff,
+                                })
+                                .unwrap(),
+                            );
+                        }
+
+                        // 全員完賽或超過 Cutoff（100秒衝刺關門或預設關門時間）
                         let all_finished = !room.runners.is_empty() &&
                             room.runners.values().all(|r| r.finish_time_ms.is_some());
-                        let cutoff_reached = room.start_at_ms.is_some() &&
+                        let sprint_cutoff_reached = room.finish_countdown_cutoff_ms.is_some_and(|t| now >= t);
+                        let general_cutoff_reached = room.start_at_ms.is_some() &&
                             now >= room.start_at_ms.unwrap() + room.cutoff_ms;
-                        all_finished || cutoff_reached
+                        all_finished || sprint_cutoff_reached || general_cutoff_reached
                     }
                     _ => false,
                 };

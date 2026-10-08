@@ -146,6 +146,16 @@ data class RunnerJoinedAlert(
     val seq: Long,
 )
 
+data class PodiumAlert(
+    val rank: Int, // 1, 2, or 3
+    val runnerId: String,
+    val name: String,
+    val country: String? = null,
+    val finishTimeMs: Long,
+    val isMe: Boolean,
+    val atMs: Long = System.currentTimeMillis(),
+)
+
 data class RaceUiState(
     val screen: Screen = Screen.PROFILE,
     val profile: Profile = Profile(),
@@ -196,6 +206,12 @@ data class RaceUiState(
     val leaderboard: List<RaceClient.Entry> = emptyList(),
     /** 選手進入房間提示（新增選手特效） */
     val newRunnerAlert: RunnerJoinedAlert? = null,
+    /** 前三名完賽通知（步驟 8） */
+    val podiumAlert: PodiumAlert? = null,
+    /** 已通知完賽的凸台名次（避免重複彈出） */
+    val notifiedPodiumRanks: Set<Int> = emptySet(),
+    /** 比賽關閉時間戳記（用於 30 秒自動返回大廳倒數） */
+    val closedAtMs: Long? = null,
 ) {
     /** 可以離開回大廳：尚未發令，或自己已完賽，或比賽已關閉。比賽中不給一鍵離開，免得誤觸。 */
     val canLeave: Boolean get() = startAtServerTime == null || finishTimeMs != null || closed
@@ -215,6 +231,20 @@ data class RaceUiState(
      * 一旦發令鳴槍起跑（serverNow >= startAtServerTime）或賽事已關閉，立刻鎖定禁止加入。
      */
     fun canAcceptNewChallenger(serverNow: Long): Boolean = inPreRace(serverNow)
+
+    /** 是否處於第 1 名完賽後的最後 100 秒衝刺倒數（步驟 9） */
+    fun isFinalSprintCutoff(serverNow: Long): Boolean {
+        val cutoff = cutoffAtServerTime ?: return false
+        val remaining = cutoff - serverNow
+        return screen == Screen.RACE && !closed && finishTimeMs == null && remaining in 1L..100_000L
+    }
+
+    /** 賽事結束後的 30 秒自動返回大廳倒數秒數；未關閉時為 null（步驟 10） */
+    fun autoExitRemainingSeconds(serverNow: Long): Int? {
+        val closedAt = closedAtMs ?: return null
+        if (!closed) return null
+        return kotlin.math.max(0, 30 - ((serverNow - closedAt) / 1000L).toInt())
+    }
 }
 
 /**
@@ -613,11 +643,47 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         val sorted = entries.sortedBy { it.rank }
         val runnerId = _state.value.profile.runnerId
         val now = serverNow()
+        val current = _state.value
+
+        // 步驟 8：偵測前三名完賽事件 (Podium Finish Alert)
+        val currentPodiumRanks = current.notifiedPodiumRanks
+        val newPodiumEntry = sorted.firstOrNull { entry ->
+            entry.rank in 1..3 && (entry.status == "FINISHED" || entry.finishTimeMs != null) &&
+                entry.rank !in currentPodiumRanks
+        }
+        val newPodiumAlert = newPodiumEntry?.let { entry ->
+            PodiumAlert(
+                rank = entry.rank,
+                runnerId = entry.runnerId,
+                name = entry.name,
+                country = entry.country,
+                finishTimeMs = entry.finishTimeMs ?: now,
+                isMe = entry.runnerId == runnerId,
+                atMs = now,
+            )
+        }
+        val updatedPodiumRanks = if (newPodiumEntry != null) {
+            currentPodiumRanks + newPodiumEntry.rank
+        } else currentPodiumRanks
+
+        // 步驟 9：若第 1 名完賽且尚未設定 100 秒關門倒數，動態啟動 100 秒衝刺倒數
+        val p1Finished = sorted.any { it.rank == 1 && (it.status == "FINISHED" || it.finishTimeMs != null) }
+        val updatedCutoff = if (p1Finished && current.cutoffAtServerTime == null) {
+            now + 100_000L
+        } else current.cutoffAtServerTime
+
         val standing = standingOf(sorted, runnerId)
-        val tension = RaceTension.next(_state.value.tension, standing, _state.value.canAdjustSpeed(now), now)
+        val tension = RaceTension.next(current.tension, standing, current.canAdjustSpeed(now), now)
         // 完賽後名次已定，差距凍結在撞線當下；否則其他人繼續跑會讓「領先幅度」一路縮到 0
-        if (_state.value.finishTimeMs != null) {
-            _state.value = _state.value.copy(fieldSize = sorted.size, tension = tension, leaderboard = sorted)
+        if (current.finishTimeMs != null) {
+            _state.value = current.copy(
+                fieldSize = sorted.size,
+                tension = tension,
+                leaderboard = sorted,
+                podiumAlert = newPodiumAlert ?: current.podiumAlert,
+                notifiedPodiumRanks = updatedPodiumRanks,
+                cutoffAtServerTime = updatedCutoff,
+            )
             return
         }
         val myIndex = sorted.indexOfFirst { it.runnerId == runnerId }
@@ -625,9 +691,9 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         // 領先者看的是對第 2 名的領先幅度，其餘人看的是對前一名的落後幅度
         val neighbour = if (myIndex == 0) sorted.getOrNull(1) else sorted.getOrNull(myIndex - 1)
         val gapToLeader = me?.let { (sorted.firstOrNull()?.distance ?: it.distance) - it.distance }
-        val previous = _state.value.gapToLeaderM
-        _state.update { current ->
-            current.copy(
+        val previous = current.gapToLeaderM
+        _state.update { curr ->
+            curr.copy(
                 rank = me?.rank,
                 fieldSize = sorted.size,
                 leaderboard = sorted,
@@ -640,13 +706,20 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
                 ) gapToLeader < previous else null,
                 standing = standing,
                 tension = tension,
+                podiumAlert = newPodiumAlert ?: curr.podiumAlert,
+                notifiedPodiumRanks = updatedPodiumRanks,
+                cutoffAtServerTime = updatedCutoff,
             )
         }
     }
 
     override fun onRaceClosed(reason: String) {
-        _state.value = _state.value.copy(closed = true).let {
-            it.copy(tension = RaceTension.next(it.tension, null, active = false, nowMs = serverNow()))
+        val now = serverNow()
+        _state.value = _state.value.copy(
+            closed = true,
+            closedAtMs = now,
+        ).let {
+            it.copy(tension = RaceTension.next(it.tension, null, active = false, nowMs = now))
         }
         // 未完賽的情況下比賽被關閉，標記為 DNF 並凍結距離
         if (_state.value.finishTimeMs == null) {
@@ -716,6 +789,122 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         onRunnerJoined(mockEvent)
     }
 
+    fun dismissPodiumAlert() {
+        _state.update { it.copy(podiumAlert = null) }
+    }
+
+    fun triggerMockPodiumAlert(rank: Int = 1) {
+        val s = _state.value
+        val now = serverNow()
+        val startAt = s.startAtServerTime ?: (now - 860_000L)
+        val isMe = rank == (s.rank ?: 2)
+        val name = when (rank) {
+            1 -> "Eliud Kipchoge"
+            2 -> if (isMe) s.profile.name else "Kenenisa Bekele"
+            3 -> "Joshua Cheptegei"
+            else -> "Elite Runner"
+        }
+        val country = when (rank) {
+            1 -> "KE"
+            2 -> if (isMe) s.profile.country else "ET"
+            3 -> "UG"
+            else -> "US"
+        }
+        val finishTime = startAt + when (rank) {
+            1 -> 855_000L // 14:15.0
+            2 -> 868_200L // 14:28.2
+            3 -> 882_500L // 14:42.5
+            else -> 900_000L
+        }
+        val alert = PodiumAlert(
+            rank = rank,
+            runnerId = if (isMe) s.profile.runnerId else "MOCK_P$rank",
+            name = name,
+            country = country,
+            finishTimeMs = finishTime,
+            isMe = isMe,
+            atMs = now,
+        )
+        _state.update {
+            it.copy(
+                podiumAlert = alert,
+                notifiedPodiumRanks = it.notifiedPodiumRanks + rank,
+            )
+        }
+    }
+
+    fun triggerMockFinalResults(userFinished: Boolean = true, userRank: Int = 2) {
+        val s = _state.value
+        val now = serverNow()
+        val raceDist = s.raceDistanceM.takeIf { it > 0.0 } ?: 5000.0
+        val startAt = now - 920_000L // ~15m20s ago
+        val userFinishTime = if (userFinished) startAt + 872_000L else null // 14:32.0
+
+        val finalBoard = listOf(
+            RaceClient.Entry(
+                rank = 1, runnerId = "R_ELIUD", name = "Eliud Kipchoge",
+                distance = raceDist, pace = "02'51\"", status = "FINISHED",
+                finishTimeMs = startAt + 855_000L, country = "KE", speedKmh = 21.0f, cadence = 194,
+                progressPercent = 1.0, gapToLeaderMs = 0L, gapToAheadMs = 0L,
+            ),
+            RaceClient.Entry(
+                rank = 2, runnerId = if (userRank == 2) s.profile.runnerId else "R_KENENISA",
+                name = if (userRank == 2) s.profile.name else "Kenenisa Bekele",
+                distance = if (userFinished && userRank == 2) raceDist else 4680.0,
+                pace = "02'54\"",
+                status = if (userFinished || userRank != 2) "FINISHED" else "DNF",
+                finishTimeMs = if (userFinished && userRank == 2) userFinishTime else (startAt + 870_000L),
+                country = if (userRank == 2) s.profile.country else "ET",
+                speedKmh = 20.6f, cadence = 190,
+                progressPercent = if (userFinished && userRank == 2) 1.0 else 0.936,
+                gapToLeaderMs = 15_000L, gapToAheadMs = 15_000L,
+            ),
+            RaceClient.Entry(
+                rank = 3, runnerId = if (userRank == 3) s.profile.runnerId else "R_JOSHUA",
+                name = if (userRank == 3) s.profile.name else "Joshua Cheptegei",
+                distance = raceDist, pace = "02'56\"", status = "FINISHED",
+                finishTimeMs = startAt + 880_000L, country = "UG", speedKmh = 20.4f, cadence = 188,
+                progressPercent = 1.0, gapToLeaderMs = 25_000L, gapToAheadMs = 10_000L,
+            ),
+            RaceClient.Entry(
+                rank = 4, runnerId = if (userRank == 4) s.profile.runnerId else "R_KENJI",
+                name = if (userRank == 4) s.profile.name else "Kenji Sato",
+                distance = 4820.0, pace = "03'08\"", status = "DNF",
+                finishTimeMs = null, country = "JP", speedKmh = 19.1f, cadence = 182,
+                progressPercent = 0.964, gapToLeaderMs = 52_000L, gapToAheadMs = 27_000L,
+            ),
+            RaceClient.Entry(
+                rank = 5, runnerId = if (userRank == 5) s.profile.runnerId else "R_SARAH",
+                name = if (userRank == 5) s.profile.name else "Sarah Connor",
+                distance = 4510.0, pace = "03'18\"", status = "DNF",
+                finishTimeMs = null, country = "US", speedKmh = 18.2f, cadence = 176,
+                progressPercent = 0.902, gapToLeaderMs = 85_000L, gapToAheadMs = 33_000L,
+            ),
+        )
+
+        _state.update {
+            it.copy(
+                screen = Screen.RACE,
+                roomId = "R0001",
+                serverConnected = true,
+                treadmillConnected = true,
+                startAtServerTime = startAt,
+                raceDistanceM = raceDist,
+                distance = if (userFinished) raceDist else 4680.0,
+                speedKmh = 0f,
+                targetSpeed = 0f,
+                rank = if (userFinished) userRank else null,
+                fieldSize = finalBoard.size,
+                finishTimeMs = userFinishTime,
+                dnf = !userFinished,
+                closed = true,
+                closedAtMs = now,
+                leaderboard = finalBoard,
+                viewMode = RaceViewMode.LEADERBOARD,
+            )
+        }
+    }
+
     override fun onCleared() {
         main.removeCallbacksAndMessages(null)
         treadmill.disconnect()
@@ -747,6 +936,15 @@ class MainActivity : ComponentActivity() {
         }
         if (newIntent.getBooleanExtra("verify_runner_alert", false)) {
             vmRef?.triggerMockRunnerJoinedAlert()
+        }
+        if (newIntent.getBooleanExtra("verify_podium_alert", false)) {
+            val rank = newIntent.getIntExtra("podium_rank", 1)
+            vmRef?.triggerMockPodiumAlert(rank)
+        }
+        if (newIntent.getBooleanExtra("verify_final_results", false)) {
+            val finished = newIntent.getBooleanExtra("user_finished", true)
+            val rank = newIntent.getIntExtra("user_rank", 2)
+            vmRef?.triggerMockFinalResults(userFinished = finished, userRank = rank)
         }
         if (newIntent.hasExtra("sim_speed")) {
             val spd = newIntent.getFloatExtra("sim_speed", 16.0f)
@@ -784,6 +982,15 @@ class MainActivity : ComponentActivity() {
                     }
                     if (intent?.getBooleanExtra("verify_runner_alert", false) == true) {
                         vm.triggerMockRunnerJoinedAlert()
+                    }
+                    if (intent?.getBooleanExtra("verify_podium_alert", false) == true) {
+                        val rank = intent?.getIntExtra("podium_rank", 1) ?: 1
+                        vm.triggerMockPodiumAlert(rank)
+                    }
+                    if (intent?.getBooleanExtra("verify_final_results", false) == true) {
+                        val finished = intent?.getBooleanExtra("user_finished", true) ?: true
+                        val rank = intent?.getIntExtra("user_rank", 2) ?: 2
+                        vm.triggerMockFinalResults(userFinished = finished, userRank = rank)
                     }
                 }
                 val state by vm.state.collectAsState()
@@ -900,32 +1107,36 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
         Column(Modifier.fillMaxSize().padding(start = (36 * k).dp, end = (36 * k).dp, bottom = (26 * k).dp)) {
             TopBar(s, now, startAt, phase, k, onLeave = { vm.leaveToLobby() })
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = s.viewMode == RaceViewMode.COCKPIT,
-                    enter = androidx.compose.animation.fadeIn(tween(250)),
-                    exit = androidx.compose.animation.fadeOut(tween(200)),
-                ) {
-                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                        PaceDial(s, k)
-                        Spacer(Modifier.weight(1f))
-                        SpeedRing(s, now, k)
-                        Spacer(Modifier.weight(1f))
-                        Column {
-                            LeaderboardCard(s, k, onExpand = { vm.setViewMode(RaceViewMode.LEADERBOARD) })
-                            Spacer(Modifier.height((14 * k).dp))
-                            SpeedControl(s, vm, s.canAdjustSpeed(now), k)
-                            Spacer(Modifier.height((14 * k).dp))
-                            ViewModeToggle(s.viewMode, k, onToggle = { vm.toggleViewMode() })
+                if (s.closed) {
+                    FinalLeaderboardView(s, vm, now, k)
+                } else {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = s.viewMode == RaceViewMode.COCKPIT,
+                        enter = androidx.compose.animation.fadeIn(tween(250)),
+                        exit = androidx.compose.animation.fadeOut(tween(200)),
+                    ) {
+                        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                            PaceDial(s, k)
+                            Spacer(Modifier.weight(1f))
+                            SpeedRing(s, now, k)
+                            Spacer(Modifier.weight(1f))
+                            Column {
+                                LeaderboardCard(s, k, onExpand = { vm.setViewMode(RaceViewMode.LEADERBOARD) })
+                                Spacer(Modifier.height((14 * k).dp))
+                                SpeedControl(s, vm, s.canAdjustSpeed(now), k)
+                                Spacer(Modifier.height((14 * k).dp))
+                                ViewModeToggle(s.viewMode, k, onToggle = { vm.toggleViewMode() })
+                            }
                         }
                     }
-                }
 
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = s.viewMode == RaceViewMode.LEADERBOARD,
-                    enter = androidx.compose.animation.fadeIn(tween(250)),
-                    exit = androidx.compose.animation.fadeOut(tween(200)),
-                ) {
-                    LeaderboardView(s, vm, now, k)
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = s.viewMode == RaceViewMode.LEADERBOARD,
+                        enter = androidx.compose.animation.fadeIn(tween(250)),
+                        exit = androidx.compose.animation.fadeOut(tween(200)),
+                    ) {
+                        LeaderboardView(s, vm, now, k)
+                    }
                 }
             }
             CompetitionTrack(s, k)
@@ -961,6 +1172,18 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
                     onDismiss = { vm.dismissRunnerAlert() },
                 )
             }
+        }
+
+        // 前三名完賽通知浮層（步驟 8：凸台完賽特效）
+        s.podiumAlert?.let { alert ->
+            PodiumAlertOverlay(
+                alert = alert,
+                now = now,
+                startAt = startAt,
+                k = k,
+                audio = audio,
+                onDismiss = { vm.dismissPodiumAlert() },
+            )
         }
     }
 }
@@ -1519,6 +1742,353 @@ private fun BoxScope.NewRunnerOverlay(
     }
 }
 
+/* ── 前三名完賽特效通知（步驟 8：Google Stitch 電競凸台設計） ── */
+
+private const val PODIUM_ALERT_DURATION_MS = 4500L
+
+@Composable
+private fun BoxScope.PodiumAlertOverlay(
+    alert: PodiumAlert,
+    now: Long,
+    startAt: Long?,
+    k: Float,
+    audio: CountdownAudio,
+    onDismiss: () -> Unit,
+) {
+    val elapsed = (now - alert.atMs).coerceAtLeast(0L)
+    val remainingSecs = max(0f, (PODIUM_ALERT_DURATION_MS - elapsed) / 1000f)
+    val progress = (1f - elapsed.toFloat() / PODIUM_ALERT_DURATION_MS).coerceIn(0f, 1f)
+
+    LaunchedEffect(alert.rank, alert.runnerId) {
+        val rankName = when (alert.rank) {
+            1 -> "First place"
+            2 -> "Second place"
+            3 -> "Third place"
+            else -> "Podium position"
+        }
+        val speech = if (alert.isMe) {
+            "Congratulations! You completed the race in $rankName! Podium finish!"
+        } else when (alert.rank) {
+            1 -> "First place finished! Champion is ${alert.name}!"
+            2 -> "Second place finished! Silver medal goes to ${alert.name}!"
+            3 -> "Third place finished! Podium complete with ${alert.name}!"
+            else -> "$rankName finished! ${alert.name}!"
+        }
+        audio.say(speech)
+    }
+
+    LaunchedEffect(now) {
+        if (elapsed >= PODIUM_ALERT_DURATION_MS) {
+            onDismiss()
+        }
+    }
+
+    val enterAnim = remember { Animatable(0f) }
+    LaunchedEffect(alert.rank, alert.runnerId) {
+        enterAnim.snapTo(0f)
+        enterAnim.animateTo(1f, tween(320, easing = FastOutSlowInEasing))
+    }
+
+    val infinite = rememberInfiniteTransition(label = "podiumAlertFx")
+    val laserProgress by infinite.animateFloat(
+        initialValue = -0.4f,
+        targetValue = 1.4f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Restart,
+        ),
+        label = "podiumLaser",
+    )
+
+    val (accentColor, medalBadge, titleText) = when (alert.rank) {
+        1 -> Triple(Gold, "🥇 GOLD MEDAL", "1ST PLACE CHAMPION")
+        2 -> Triple(Color(0xFFC0D8E0), "🥈 SILVER MEDAL", "2ND PLACE FINISHER")
+        3 -> Triple(Color(0xFFCD7F32), "🥉 BRONZE MEDAL", "3RD PLACE PODIUM")
+        else -> Triple(Cyan, "⭐ PODIUM", "FINISHER")
+    }
+
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.68f * enterAnim.value))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        val cutPx = 20f * k
+        val cardShape = remember(cutPx) { ChamferCutShape(cutPx) }
+
+        Box(
+            Modifier.width((780 * k).dp)
+                .graphicsLayer {
+                    val t = enterAnim.value
+                    scaleX = 0.88f + 0.12f * t
+                    scaleY = 0.88f + 0.12f * t
+                    alpha = t
+                }
+                .clickable(enabled = false) {}
+                .clip(cardShape)
+                .background(Color(0xF50A1016))
+                .border((2f * k).dp, accentColor.copy(alpha = 0.85f), cardShape)
+                .drawBehind {
+                    val bLen = 24f * k
+                    val bStroke = 3.5f * k
+                    // Top-Left
+                    drawLine(accentColor, Offset(0f, 0f), Offset(bLen, 0f), strokeWidth = bStroke)
+                    drawLine(accentColor, Offset(0f, 0f), Offset(0f, bLen), strokeWidth = bStroke)
+                    // Top-Right
+                    drawLine(accentColor, Offset(size.width, 0f), Offset(size.width - bLen, 0f), strokeWidth = bStroke)
+                    drawLine(accentColor, Offset(size.width, 0f), Offset(size.width, bLen), strokeWidth = bStroke)
+                    // Bottom-Left
+                    drawLine(accentColor, Offset(0f, size.height), Offset(bLen, size.height), strokeWidth = bStroke)
+                    drawLine(accentColor, Offset(0f, size.height), Offset(0f, size.height - bLen), strokeWidth = bStroke)
+                    // Bottom-Right
+                    drawLine(accentColor, Offset(size.width, size.height), Offset(size.width - bLen, size.height), strokeWidth = bStroke)
+                    drawLine(accentColor, Offset(size.width, size.height), Offset(size.width, size.height - bLen), strokeWidth = bStroke)
+
+                    val lx = size.width * laserProgress
+                    val lWidth = 140f * k
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            listOf(Color.Transparent, accentColor.copy(alpha = 0.18f), Color.Transparent),
+                            startX = lx,
+                            endX = lx + lWidth,
+                        )
+                    )
+                }
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                // 1. 頂部狀態列
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((52 * k).dp)
+                        .background(Color(0xFF0F1720))
+                        .padding(horizontal = (20 * k).dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size((10 * k).dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(accentColor)
+                        )
+                        Spacer(Modifier.width((10 * k).dp))
+                        Text(
+                            text = "PODIUM FINISH EVENT · HEAT BROADCAST",
+                            color = accentColor,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (13 * k).sp,
+                            letterSpacing = (1.5 * k).sp,
+                        )
+                    }
+
+                    Box(
+                        Modifier.clip(RoundedCornerShape((4 * k).dp))
+                            .background(accentColor.copy(alpha = 0.15f))
+                            .border((1 * k).dp, accentColor.copy(alpha = 0.5f), RoundedCornerShape((4 * k).dp))
+                            .padding(horizontal = (10 * k).dp, vertical = (4 * k).dp),
+                    ) {
+                        Text(
+                            text = medalBadge,
+                            color = accentColor,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = (12 * k).sp,
+                            letterSpacing = (1 * k).sp,
+                        )
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(accentColor.copy(alpha = 0.35f)))
+
+                // 2. 完賽選手凸台卡本體
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = (24 * k).dp, vertical = (22 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 左側大獎章頭像
+                    Column(
+                        Modifier.width((170 * k).dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Box(
+                            Modifier.size((110 * k).dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(accentColor.copy(alpha = 0.18f))
+                                .border((2.5f * k).dp, accentColor, RoundedCornerShape(50)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "P${alert.rank}",
+                                color = accentColor,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (46 * k).sp,
+                            )
+                        }
+                        Spacer(Modifier.height((10 * k).dp))
+                        Box(
+                            Modifier.clip(RoundedCornerShape(50))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .border((1 * k).dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
+                                .padding(horizontal = (12 * k).dp, vertical = (4 * k).dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = if (alert.isMe) "YOU FINISHED" else "HEAT FINISHER",
+                                color = if (alert.isMe) Cyan else Label,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (11 * k).sp,
+                                letterSpacing = (0.5 * k).sp,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.width((24 * k).dp))
+
+                    // 右側選手姓名與成績
+                    Column(Modifier.weight(1f)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                Modifier.clip(RoundedCornerShape((4 * k).dp))
+                                    .background(accentColor.copy(alpha = 0.12f))
+                                    .border((1 * k).dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape((4 * k).dp))
+                                    .padding(horizontal = (8 * k).dp, vertical = (3 * k).dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "${countryFullName(alert.country)} ${flagEmoji(alert.country)}",
+                                    color = accentColor,
+                                    fontFamily = Grotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = (11 * k).sp,
+                                    letterSpacing = (0.8 * k).sp,
+                                )
+                            }
+
+                            Text(
+                                text = titleText,
+                                color = accentColor,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (12 * k).sp,
+                                letterSpacing = (1 * k).sp,
+                            )
+                        }
+
+                        Spacer(Modifier.height((6 * k).dp))
+
+                        Text(
+                            text = alert.name.uppercase(),
+                            color = Color.White,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (32 * k).sp,
+                            letterSpacing = (-0.5 * k).sp,
+                            maxLines = 1,
+                        )
+
+                        Spacer(Modifier.height((12 * k).dp))
+
+                        // 成績卡片
+                        val elapsedMs = if (startAt != null) max(0L, alert.finishTimeMs - startAt) else alert.finishTimeMs
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape((8 * k).dp))
+                                .background(Color(0xFF060D12))
+                                .border((1 * k).dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape((8 * k).dp))
+                                .padding(horizontal = (16 * k).dp, vertical = (12 * k).dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column {
+                                Text("OFFICIAL FINISH TIME", color = Label, fontFamily = Grotesk, fontSize = (11 * k).sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Glow(fmtClock(elapsedMs), accentColor, k, 24f, glow = true)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("RESULT STATUS", color = Label, fontFamily = Grotesk, fontSize = (11 * k).sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height((2 * k).dp))
+                                Text("OFFICIAL FINISH", color = Color.White, fontFamily = Grotesk, fontSize = (15 * k).sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height((1 * k).dp).background(Color.White.copy(alpha = 0.12f)))
+
+                // 3. 底部動作列
+                Row(
+                    Modifier.fillMaxWidth()
+                        .height((56 * k).dp)
+                        .background(Color(0xE0121A20))
+                        .padding(horizontal = (20 * k).dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "AUTO-DISMISS",
+                            color = Label,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = (11 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                        Spacer(Modifier.width((10 * k).dp))
+                        Box(
+                            Modifier.width((180 * k).dp)
+                                .height((6 * k).dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Color.White.copy(alpha = 0.1f))
+                        ) {
+                            Box(
+                                Modifier.fillMaxHeight()
+                                    .fillMaxWidth(progress)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(accentColor)
+                            )
+                        }
+                        Spacer(Modifier.width((10 * k).dp))
+                        Text(
+                            text = "%.1fs".format(remainingSecs),
+                            color = accentColor,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (12 * k).sp,
+                        )
+                    }
+
+                    Box(
+                        Modifier.clip(RoundedCornerShape((6 * k).dp))
+                            .background(accentColor)
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = (20 * k).dp, vertical = (9 * k).dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "CONTINUE RACE",
+                            color = Carbon,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = (12 * k).sp,
+                            letterSpacing = (0.8 * k).sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* ── 名次提示 ── */
 
 /** 提示卡／晶片要畫的內容。 */
@@ -1980,6 +2550,7 @@ private fun TopBar(
         val counting = phase is CountdownPhase.Counting
         SoftLabel(
             when {
+                s.closed -> "OFFICIAL RESULTS"
                 s.dnf -> "DNF"
                 startAt == null -> "STANDBY"
                 counting -> "GET SET"
@@ -1990,21 +2561,38 @@ private fun TopBar(
         Spacer(Modifier.width((14 * k).dp))
         Glow(
             when {
+                s.closed -> "RACE CLOSED"
                 s.dnf -> "%,dm".format(s.distance.roundToInt())
                 startAt == null -> "--:--"
                 phase is CountdownPhase.Counting -> "T-${phase.secondsLeft}"
                 s.finishTimeMs != null -> fmtClock(s.finishTimeMs - startAt)
                 else -> fmtClock(now - startAt)
             },
-            if (s.dnf) Coral else if (counting || s.finishTimeMs != null) Gold else Color.White,
-            k, 34f, glow = counting || s.finishTimeMs != null,
+            if (s.dnf) Coral else if (s.closed) Gold else if (counting || s.finishTimeMs != null) Gold else Color.White,
+            k, 34f, glow = counting || s.finishTimeMs != null || s.closed,
         )
     }
 
     Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-        // 截止倒數只在比賽中出現，此時不顯示離開鈕，右側有空間
+        // 截止倒數：若進入第 1 名完賽後的最後 100 秒衝刺階段，則以動態珊瑚紅徽章閃爍警示（步驟 9）
         if (startAt != null && s.finishTimeMs == null && !s.closed && s.cutoffAtServerTime != null) {
-            SoftLabel("CUTOFF ${fmtClock(max(0L, s.cutoffAtServerTime - now)).substringBefore('.')}", Label, k, 15f)
+            val isFinalSprint = s.isFinalSprintCutoff(now)
+            val remainingMs = max(0L, s.cutoffAtServerTime - now)
+            val timeText = fmtClock(remainingMs).substringBefore('.')
+            if (isFinalSprint) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Coral.copy(alpha = 0.2f))
+                        .border((1.2f * k).dp, Coral, RoundedCornerShape(50))
+                        .padding(horizontal = (12 * k).dp, vertical = (4 * k).dp),
+                ) {
+                    Glow("⚡ FINAL SPRINT $timeText", Coral, k, 15f, glow = true)
+                }
+            } else {
+                SoftLabel("CUTOFF $timeText", Label, k, 15f)
+            }
             Spacer(Modifier.width((20 * k).dp))
         }
         StatusDot("BELT", s.treadmillConnected, k)
@@ -2618,6 +3206,407 @@ private fun LeaderboardRow(
                     SoftLabel("--", Label, k, 14f)
                 }
             }
+        }
+    }
+}
+
+/* ── 最終成績排行榜視圖（步驟 10：30 秒倒數 + 離開按鈕） ── */
+
+@Composable
+private fun FinalLeaderboardView(
+    s: RaceUiState,
+    vm: RaceViewModel,
+    now: Long,
+    k: Float,
+) {
+    val entries = if (s.leaderboard.isNotEmpty()) s.leaderboard else sampleLeaderboard(s.profile.runnerId, s.distance, s.raceDistanceM)
+    val startAt = s.startAtServerTime
+    val remainingSec = s.autoExitRemainingSeconds(now)
+
+    // 30 秒自動倒數歸零後，自動觸發返回大廳（步驟 10）
+    LaunchedEffect(remainingSec) {
+        if (remainingSec != null && remainingSec <= 0) {
+            vm.leaveToLobby()
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize()
+            .glass(k, Color.White.copy(alpha = .12f), Color.Black.copy(alpha = .38f))
+            .padding((20 * k).dp)
+    ) {
+        // 1. 頂部列：標題 + 30秒倒數 + 離開按鈕
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Glow("OFFICIAL FINAL RESULTS", Gold, k, 26f, glow = true)
+                    Spacer(Modifier.width((12 * k).dp))
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(Gold.copy(alpha = .15f))
+                            .border((1 * k).dp, Gold.copy(alpha = .5f), RoundedCornerShape(50))
+                            .padding(horizontal = (10 * k).dp, vertical = (3 * k).dp)
+                    ) {
+                        Text(
+                            "EVENT CONCLUDED",
+                            color = Gold,
+                            fontFamily = Grotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (12 * k).sp,
+                            letterSpacing = (1 * k).sp,
+                        )
+                    }
+                }
+                Spacer(Modifier.height((4 * k).dp))
+                SoftLabel(
+                    "%,dm WORLD TRACK COMPETITION · OFFICIAL STANDINGS LOCKED".format(s.raceDistanceM.roundToInt()),
+                    Label, k, 13f,
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 30 秒倒數標籤
+                Row(
+                    Modifier.clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border((1 * k).dp, Cyan.copy(alpha = 0.5f), RoundedCornerShape(50))
+                        .padding(horizontal = (14 * k).dp, vertical = (6 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size((8 * k).dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Cyan)
+                    )
+                    Spacer(Modifier.width((8 * k).dp))
+                    Text(
+                        text = "AUTO EXIT IN ${remainingSec ?: 30}s",
+                        color = Cyan,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = (13 * k).sp,
+                        letterSpacing = (0.5 * k).sp,
+                    )
+                }
+
+                Spacer(Modifier.width((14 * k).dp))
+
+                // 回大廳主要按鈕
+                Box(
+                    Modifier.clip(RoundedCornerShape((8 * k).dp))
+                        .background(
+                            Brush.horizontalGradient(listOf(Cyan.copy(alpha = 0.9f), Cyan))
+                        )
+                        .clickable { vm.leaveToLobby() }
+                        .padding(horizontal = (20 * k).dp, vertical = (10 * k).dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "‹ RETURN TO LOBBY",
+                        color = Carbon,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = (14 * k).sp,
+                        letterSpacing = (0.8 * k).sp,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height((12 * k).dp))
+
+        // 2. 個人成果焦點卡片（Finisher 榮譽卡 or DNF 關門卡）
+        val isFinished = s.finishTimeMs != null
+        val personalBg = if (isFinished) Cyan.copy(alpha = 0.12f) else Coral.copy(alpha = 0.12f)
+        val personalBorder = if (isFinished) Cyan.copy(alpha = 0.6f) else Coral.copy(alpha = 0.6f)
+        val personalTagColor = if (isFinished) Cyan else Coral
+
+        Row(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape((10 * k).dp))
+                .background(personalBg)
+                .border((1.2f * k).dp, personalBorder, RoundedCornerShape((10 * k).dp))
+                .padding(horizontal = (16 * k).dp, vertical = (10 * k).dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (isFinished) "🏆" else "⚠️",
+                    fontSize = (22 * k).sp,
+                )
+                Spacer(Modifier.width((12 * k).dp))
+                Column {
+                    Text(
+                        text = if (isFinished) "CONGRATULATIONS, ${s.profile.name.uppercase()}!" else "TIME EXPIRED, ${s.profile.name.uppercase()}",
+                        color = Color.White,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = (15 * k).sp,
+                    )
+                    Text(
+                        text = if (isFinished) {
+                            val timeStr = if (startAt != null) fmtClock(s.finishTimeMs - startAt) else fmtClock(s.finishTimeMs)
+                            "You officially finished P${s.rank ?: 1} with time $timeStr · Avg Pace: ${s.pace}"
+                        } else {
+                            "Time cutoff reached (DNF) · Completed %,dm of %,dm".format(s.distance.roundToInt(), s.raceDistanceM.roundToInt())
+                        },
+                        color = Label,
+                        fontFamily = Grotesk,
+                        fontSize = (12 * k).sp,
+                    )
+                }
+            }
+
+            Box(
+                Modifier.clip(RoundedCornerShape(50))
+                    .background(personalTagColor.copy(alpha = 0.2f))
+                    .border((1 * k).dp, personalTagColor, RoundedCornerShape(50))
+                    .padding(horizontal = (12 * k).dp, vertical = (4 * k).dp),
+            ) {
+                Text(
+                    text = if (isFinished) "STATUS: OFFICIAL FINISH" else "STATUS: DNF",
+                    color = personalTagColor,
+                    fontFamily = Grotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (11 * k).sp,
+                    letterSpacing = (0.5 * k).sp,
+                )
+            }
+        }
+
+        Spacer(Modifier.height((12 * k).dp))
+
+        // 3. 表頭
+        Row(
+            Modifier.fillMaxWidth()
+                .background(Color.White.copy(alpha = .04f), RoundedCornerShape((8 * k).dp))
+                .padding(horizontal = (16 * k).dp, vertical = (10 * k).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.width((64 * k).dp), contentAlignment = Alignment.CenterStart) {
+                SoftLabel("POS", Label, k, 13f)
+            }
+            Box(Modifier.weight(2.6f)) {
+                SoftLabel("ATHLETE", Label, k, 13f)
+            }
+            Box(Modifier.width((110 * k).dp), contentAlignment = Alignment.Center) {
+                SoftLabel("STATUS", Label, k, 13f)
+            }
+            Box(Modifier.weight(2.2f), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("FINISH TIME / DISTANCE", Label, k, 13f)
+            }
+            Box(Modifier.width((100 * k).dp), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("AVG PACE", Label, k, 13f)
+            }
+            Box(Modifier.width((100 * k).dp), contentAlignment = Alignment.CenterEnd) {
+                SoftLabel("SPEED", Label, k, 13f)
+            }
+        }
+
+        Spacer(Modifier.height((8 * k).dp))
+
+        // 4. 成績清單
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy((8 * k).dp),
+        ) {
+            items(entries, key = { it.runnerId }) { entry ->
+                val isMe = entry.runnerId == s.profile.runnerId
+                FinalLeaderboardRow(
+                    entry = entry,
+                    isMe = isMe,
+                    startAt = startAt,
+                    k = k,
+                    modifier = Modifier.animateItem(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FinalLeaderboardRow(
+    entry: RaceClient.Entry,
+    isMe: Boolean,
+    startAt: Long?,
+    k: Float,
+    modifier: Modifier = Modifier,
+) {
+    val isP1 = entry.rank == 1
+    val isP2 = entry.rank == 2
+    val isP3 = entry.rank == 3
+    val isFinished = entry.status == "FINISHED" || entry.finishTimeMs != null
+
+    val (cardBg, cardBorder) = when {
+        isMe -> Cyan.copy(alpha = .18f) to Cyan.copy(alpha = .85f)
+        isP1 -> Gold.copy(alpha = .10f) to Gold.copy(alpha = .45f)
+        else -> Color.White.copy(alpha = .04f) to Color.White.copy(alpha = .10f)
+    }
+
+    val rankColor = when {
+        isMe -> Cyan
+        isP1 -> Gold
+        isP2 -> Color(0xFFC0D8E0)
+        isP3 -> Color(0xFFCD7F32)
+        else -> Label
+    }
+
+    val medalIcon = when (entry.rank) {
+        1 -> "🥇"
+        2 -> "🥈"
+        3 -> "🥉"
+        else -> ""
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height((58 * k).dp)
+            .clip(RoundedCornerShape((12 * k).dp))
+            .background(cardBg)
+            .border((1.2f * k).dp, cardBorder, RoundedCornerShape((12 * k).dp))
+            .padding(horizontal = (16 * k).dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 1. 名次 Badge
+        Box(Modifier.width((64 * k).dp), contentAlignment = Alignment.CenterStart) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (medalIcon.isNotEmpty()) {
+                    Text(medalIcon, fontSize = (16 * k).sp)
+                    Spacer(Modifier.width((4 * k).dp))
+                }
+                Glow(
+                    text = "P${entry.rank}",
+                    color = rankColor,
+                    k = k,
+                    size = if (entry.rank <= 3 || isMe) 20f else 17f,
+                    glow = isP1 || isMe,
+                )
+            }
+        }
+
+        // 2. 選手資訊
+        Row(Modifier.weight(2.6f), verticalAlignment = Alignment.CenterVertically) {
+            val avatarBg = when {
+                isMe -> Cyan
+                isP1 -> Gold
+                else -> Color.White.copy(alpha = .15f)
+            }
+            Box(
+                Modifier.size((36 * k).dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(avatarBg),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = initials(entry.name),
+                    color = Carbon,
+                    fontFamily = Grotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (13 * k).sp,
+                )
+            }
+            Spacer(Modifier.width((12 * k).dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = entry.name,
+                        color = Color.White,
+                        fontFamily = Grotesk,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = (16 * k).sp,
+                    )
+                    if (isMe) {
+                        Spacer(Modifier.width((8 * k).dp))
+                        Box(
+                            Modifier.clip(RoundedCornerShape(50))
+                                .background(Cyan.copy(alpha = .25f))
+                                .border((1 * k).dp, Cyan, RoundedCornerShape(50))
+                                .padding(horizontal = (6 * k).dp, vertical = (2 * k).dp)
+                        ) {
+                            Text(
+                                "YOU",
+                                color = Cyan,
+                                fontFamily = Grotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = (9 * k).sp,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = "${countryFullName(entry.country)} ${flagEmoji(entry.country)}",
+                    color = Label,
+                    fontFamily = Grotesk,
+                    fontSize = (12 * k).sp,
+                )
+            }
+        }
+
+        // 3. 狀態 Badge
+        Box(Modifier.width((110 * k).dp), contentAlignment = Alignment.Center) {
+            val stBg = if (isFinished) Gold.copy(alpha = 0.15f) else Coral.copy(alpha = 0.15f)
+            val stColor = if (isFinished) Gold else Coral
+            val stBorder = if (isFinished) Gold.copy(alpha = 0.5f) else Coral.copy(alpha = 0.5f)
+            Box(
+                Modifier.clip(RoundedCornerShape(50))
+                    .background(stBg)
+                    .border((1 * k).dp, stBorder, RoundedCornerShape(50))
+                    .padding(horizontal = (10 * k).dp, vertical = (3 * k).dp)
+            ) {
+                Text(
+                    text = if (isFinished) "FINISHED" else "DNF",
+                    color = stColor,
+                    fontFamily = Grotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (11 * k).sp,
+                    letterSpacing = (0.5 * k).sp,
+                )
+            }
+        }
+
+        // 4. 成績時間 / 距離
+        Box(Modifier.weight(2.2f), contentAlignment = Alignment.CenterEnd) {
+            val finishStr = when {
+                entry.finishTimeMs != null && startAt != null -> fmtClock(max(0L, entry.finishTimeMs - startAt))
+                entry.finishTimeMs != null -> fmtClock(entry.finishTimeMs)
+                isFinished -> "--:--"
+                else -> "DNF (%,dm)".format(entry.distance.roundToInt())
+            }
+            Text(
+                text = finishStr,
+                color = if (isFinished) Color.White else Coral,
+                fontFamily = Grotesk,
+                fontWeight = FontWeight.Bold,
+                fontSize = (16 * k).sp,
+            )
+        }
+
+        // 5. 配速
+        Box(Modifier.width((100 * k).dp), contentAlignment = Alignment.CenterEnd) {
+            Text(
+                text = entry.pace,
+                color = Color.White,
+                fontFamily = Grotesk,
+                fontWeight = FontWeight.Medium,
+                fontSize = (15 * k).sp,
+            )
+        }
+
+        // 6. 速度
+        Box(Modifier.width((100 * k).dp), contentAlignment = Alignment.CenterEnd) {
+            Text(
+                text = "%.1f km/h".format(entry.speedKmh),
+                color = Label,
+                fontFamily = Grotesk,
+                fontWeight = FontWeight.Medium,
+                fontSize = (14 * k).sp,
+            )
         }
     }
 }
