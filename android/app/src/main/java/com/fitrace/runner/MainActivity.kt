@@ -208,6 +208,13 @@ data class RaceUiState(
     fun inPreRace(serverNow: Long): Boolean =
         screen == Screen.RACE && roomId.isNotEmpty() && !closed &&
             (startAtServerTime == null || serverNow < startAtServerTime)
+
+    /**
+     * 比賽是否允許新挑戰者加入房間：
+     * 嚴格限定在比賽尚未發令起跑的預備/倒數階段（inPreRace）。
+     * 一旦發令鳴槍起跑（serverNow >= startAtServerTime）或賽事已關閉，立刻鎖定禁止加入。
+     */
+    fun canAcceptNewChallenger(serverNow: Long): Boolean = inPreRace(serverNow)
 }
 
 /**
@@ -373,38 +380,93 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
         }
     }
 
-    fun enterVerificationRace(profile: Profile? = null, cockpitMode: Boolean = false) {
+    fun enterVerificationRace(
+        profile: Profile? = null,
+        cockpitMode: Boolean = false,
+        preRaceCountdownSec: Int? = null,
+    ) {
         val p = profile ?: _state.value.profile
         saveProfileToPrefs(p)
         treadmill.connect()
         val raceDist = 5000.0
-        val myDist = 3230.0
-        val sampleBoard = sampleLeaderboard(p.runnerId, myDist, raceDist)
         val now = System.currentTimeMillis()
-        val startAt = now - 480_000L // 8 minutes ago
-        _state.value = RaceUiState(
-            screen = Screen.RACE,
-            profile = p,
-            roomId = "R0001",
-            serverConnected = true,
-            treadmillConnected = true,
-            startAtServerTime = startAt,
-            raceDistanceM = raceDist,
-            speedKmh = 14.8f,
-            targetSpeed = 15.0f,
-            incline = 1.0f,
-            distance = myDist,
-            pace = "04'05\"",
-            cadence = 182,
-            rank = 2,
-            fieldSize = sampleBoard.size,
-            gapToLeaderM = 420.0,
-            gapToNeighbourM = 150.0,
-            leaderDistanceM = 3650.0,
-            beltStatus = BeltStatus.RUNNING,
-            viewMode = if (cockpitMode) RaceViewMode.COCKPIT else RaceViewMode.LEADERBOARD,
-            leaderboard = sampleBoard,
-        )
+        if (preRaceCountdownSec != null) {
+            // 準備起跑階段（熱身/倒數中）：發令時間在未來，等待槍響前可展示挑戰者加入
+            val startAt = now + (preRaceCountdownSec * 1000L)
+            val sampleBoard = sampleLeaderboard(p.runnerId, 0.0, raceDist)
+            _state.update {
+                RaceUiState(
+                    screen = Screen.RACE,
+                    profile = p,
+                    roomId = "R0001",
+                    serverConnected = true,
+                    treadmillConnected = true,
+                    startAtServerTime = startAt,
+                    raceDistanceM = raceDist,
+                    speedKmh = 0.0f,
+                    targetSpeed = 0.0f,
+                    incline = 1.0f,
+                    distance = 0.0,
+                    pace = "--'--\"",
+                    cadence = 0,
+                    rank = 1,
+                    fieldSize = 5,
+                    gapToLeaderM = 0.0,
+                    gapToNeighbourM = null,
+                    leaderDistanceM = 0.0,
+                    beltStatus = BeltStatus.IDLE,
+                    viewMode = if (cockpitMode) RaceViewMode.COCKPIT else RaceViewMode.LEADERBOARD,
+                    leaderboard = sampleBoard,
+                )
+            }
+        } else {
+            // 競速進行中模式（用於直接檢視中途 HUD / 排行榜數據）
+            val myDist = 3230.0
+            val sampleBoard = sampleLeaderboard(p.runnerId, myDist, raceDist)
+            val startAt = now - 480_000L // 8 minutes ago
+            _state.update {
+                RaceUiState(
+                    screen = Screen.RACE,
+                    profile = p,
+                    roomId = "R0001",
+                    serverConnected = true,
+                    treadmillConnected = true,
+                    startAtServerTime = startAt,
+                    raceDistanceM = raceDist,
+                    speedKmh = 14.8f,
+                    targetSpeed = 15.0f,
+                    incline = 1.0f,
+                    distance = myDist,
+                    pace = "04'05\"",
+                    cadence = 182,
+                    rank = 2,
+                    fieldSize = sampleBoard.size,
+                    gapToLeaderM = 420.0,
+                    gapToNeighbourM = 150.0,
+                    leaderDistanceM = 3650.0,
+                    beltStatus = BeltStatus.RUNNING,
+                    viewMode = if (cockpitMode) RaceViewMode.COCKPIT else RaceViewMode.LEADERBOARD,
+                    leaderboard = sampleBoard,
+                )
+            }
+        }
+    }
+
+    fun setVerificationRunningMetrics(speedKmh: Float, distanceM: Double, cadence: Int = 182, pace: String = "03'45\"") {
+        _state.update { current ->
+            current.copy(
+                speedKmh = speedKmh,
+                targetSpeed = speedKmh,
+                distance = distanceM,
+                cadence = cadence,
+                pace = pace,
+                beltStatus = BeltStatus.RUNNING,
+                rank = 2,
+                gapToLeaderM = 320.0,
+                gapToNeighbourM = 110.0,
+                leaderDistanceM = distanceM + 320.0,
+            )
+        }
     }
 
     fun nudgeSpeed(delta: Float) {
@@ -580,22 +642,38 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     override fun onRunnerJoined(event: RunnerJoinedEvent) {
         // 自己進入房間不需彈出提示
         if (event.runnerId == _state.value.profile.runnerId) return
+        val s = _state.value
+        val now = serverNow()
+        // 規則嚴格鎖定：僅在比賽尚未起跑（Pre-Race 預備/倒數階段）允許新選手加入。
+        // 比賽一旦發令鳴槍起跑（now >= startAtServerTime）或賽事已關閉，立刻鎖定房間並忽略任何加入事件。
+        if (!s.canAcceptNewChallenger(now)) {
+            android.util.Log.i("RaceVM", "Runner joined ignored: race is already locked/running (now=$now, startAt=${s.startAtServerTime})")
+            return
+        }
         val seq = System.currentTimeMillis()
-        val curField = _state.value.fieldSize
+        val curField = s.fieldSize
         val newField = if (event.fieldSize > 0) event.fieldSize else curField + 1
-        _state.value = _state.value.copy(
-            fieldSize = newField,
-            newRunnerAlert = RunnerJoinedAlert(event, System.currentTimeMillis(), seq),
-        )
+        _state.update { current ->
+            current.copy(
+                fieldSize = newField,
+                newRunnerAlert = RunnerJoinedAlert(event, System.currentTimeMillis(), seq),
+            )
+        }
     }
 
     fun dismissRunnerAlert() {
-        _state.value = _state.value.copy(newRunnerAlert = null)
+        _state.update { it.copy(newRunnerAlert = null) }
     }
 
     fun triggerMockRunnerJoinedAlert() {
+        val s = _state.value
+        val now = serverNow()
+        if (!s.canAcceptNewChallenger(now)) {
+            android.util.Log.w("RaceVM", "Cannot trigger mock alert: race is locked/running")
+            return
+        }
         val mockEvent = RunnerJoinedEvent(
-            roomId = _state.value.roomId.ifEmpty { "R0001" },
+            roomId = s.roomId.ifEmpty { "R0001" },
             runnerId = "R_ELIUD",
             name = "Eliud Kipchoge",
             country = "KE",
@@ -603,7 +681,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             avatarUrl = null,
             lane = 3,
             deviceId = "TREADMILL CONSOLE #03",
-            fieldSize = 6,
+            fieldSize = (s.fieldSize.takeIf { it > 0 } ?: 5) + 1,
             capacity = 8,
             tier = "WORLD CLASS TIER",
             bio = "Marathon World Record Holder · 5,000M Olympic Finalist",
@@ -634,6 +712,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(newIntent: android.content.Intent) {
         super.onNewIntent(newIntent)
         setIntent(newIntent)
+        if (newIntent.getBooleanExtra("verify_runner_pre_race", false)) {
+            val countdownSec = newIntent.getIntExtra("countdown_sec", 6)
+            vmRef?.enterVerificationRace(cockpitMode = true, preRaceCountdownSec = countdownSec)
+        }
         if (newIntent.getBooleanExtra("verify_runner_cockpit", false)) {
             vmRef?.enterVerificationRace(cockpitMode = true)
         }
@@ -642,6 +724,11 @@ class MainActivity : ComponentActivity() {
         }
         if (newIntent.getBooleanExtra("verify_runner_alert", false)) {
             vmRef?.triggerMockRunnerJoinedAlert()
+        }
+        if (newIntent.hasExtra("sim_speed")) {
+            val spd = newIntent.getFloatExtra("sim_speed", 16.0f)
+            val dist = newIntent.getDoubleExtra("sim_dist", 3200.0)
+            vmRef?.setVerificationRunningMetrics(spd, dist)
         }
         if (newIntent.getBooleanExtra("toggle_view_mode", false)) {
             vmRef?.toggleViewMode()
@@ -664,14 +751,15 @@ class MainActivity : ComponentActivity() {
                 val vm: RaceViewModel = viewModel()
                 vmRef = vm
                 LaunchedEffect(Unit) {
-                    if (intent?.getBooleanExtra("verify_leaderboard", false) == true) {
+                    if (intent?.getBooleanExtra("verify_runner_pre_race", false) == true) {
+                        val countdownSec = intent?.getIntExtra("countdown_sec", 6) ?: 6
+                        vm.enterVerificationRace(cockpitMode = true, preRaceCountdownSec = countdownSec)
+                    } else if (intent?.getBooleanExtra("verify_leaderboard", false) == true) {
                         vm.enterVerificationRace(cockpitMode = false)
-                    }
-                    if (intent?.getBooleanExtra("verify_runner_cockpit", false) == true) {
+                    } else if (intent?.getBooleanExtra("verify_runner_cockpit", false) == true) {
                         vm.enterVerificationRace(cockpitMode = true)
                     }
                     if (intent?.getBooleanExtra("verify_runner_alert", false) == true) {
-                        vm.enterVerificationRace()
                         vm.triggerMockRunnerJoinedAlert()
                     }
                 }
@@ -746,8 +834,12 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
                     }
                 }
                 Box(Modifier.weight(1.05f)) {
-                    SecondaryPill("ALERT EFFECT", k) {
-                        vm.enterVerificationRace(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+                    SecondaryPill("PRE-RACE HEAT", k) {
+                        vm.enterVerificationRace(
+                            Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()),
+                            cockpitMode = true,
+                            preRaceCountdownSec = 6,
+                        )
                         vm.triggerMockRunnerJoinedAlert()
                     }
                 }
@@ -828,15 +920,24 @@ private fun Hud(s: RaceUiState, vm: RaceViewModel) {
             ) { Glow("SAFETY KEY DETACHED", Coral, k, 40f) }
         }
 
-        // 新選手加入比賽房間通知特效（Google Stitch 電競戰術彈卡）
-        s.newRunnerAlert?.let { alert ->
-            NewRunnerOverlay(
-                alert = alert,
-                now = now,
-                k = k,
-                audio = audio,
-                onDismiss = { vm.dismissRunnerAlert() },
-            )
+        // 發令鳴槍起跑瞬間自動消除可能仍在畫面的加入提示，專注比賽
+        LaunchedEffect(s.inPreRace(now)) {
+            if (!s.inPreRace(now) && s.newRunnerAlert != null) {
+                vm.dismissRunnerAlert()
+            }
+        }
+
+        // 新選手加入比賽房間通知特效（Google Stitch 電競戰術彈卡：僅在發令前預備/倒數期間展示，起跑後鎖定）
+        if (s.canAcceptNewChallenger(now)) {
+            s.newRunnerAlert?.let { alert ->
+                NewRunnerOverlay(
+                    alert = alert,
+                    now = now,
+                    k = k,
+                    audio = audio,
+                    onDismiss = { vm.dismissRunnerAlert() },
+                )
+            }
         }
     }
 }
