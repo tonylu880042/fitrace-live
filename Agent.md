@@ -71,58 +71,58 @@
 
 | 實作 | 說明 |
 |---|---|
-| `FitOSTreadmill` | 透過 AIDL 綁定 FitOS 系統服務（下方 §2.1 為提案合約）；開發時綁定 `MockFitOSService` 模擬跑步機 |
+| `FitOSTreadmill` | 透過官方 FitOS Equipment SDK（AIDL Binder IPC）綁定 FitOS 主機服務；未安裝 FitOS 的環境自動綁定 `MockFitOSService` 模擬跑步機 |
 
-以下 §2.1 是 **FitOS 實作**所使用的介面合約。
+以下 §2.1 是 **FitOS 實作**所使用的官方 SDK 與 AIDL 介面合約。
 
-### 2.1 AIDL 介面合約定義
+### 2.1 FitOS Equipment SDK (AIDL) 介面合約定義
 
-> **狀態：提案版本，尚未取得 FitOS 實際介面規格。** 以下欄位與方法為本專案預期的合約，實作 Android 端（Phase 3）前須與 FitOS 方確認並對齊。雲端協議（§3）刻意不依賴 AIDL 細節，因此規格變動只影響 Android 端內部。
+> **狀態：正式版導入（FitOS Equipment SDK v1）。**
+> 依據《FitOS Equipment SDK Integration Guide v1》將官方 `FitOSEquipmentSDK-release.aar` 導入專案（包名 `com.ucare.fitosequipmentsdk`）。
 
-- **傳輸協議**：Android Binder IPC（延遲 < 1ms，零藍牙斷線風險）
-- **高可用機制**：`FitOSTreadmill` 實作 `IBinder.DeathRecipient`，若 FitOS 系統服務重啟，自動重新綁定並恢復註冊。
+- **傳輸機制**：Android Binder IPC（延遲 < 1ms，零藍牙斷線風險）
+- **官方套件**：`libs/FitOSEquipmentSDK-release.aar`
+- **權限與可見性**：
+  - 權限：`<uses-permission android:name="com.ucare.fitos.permission.EQUIPMENT_SERVICE" />`
+  - 查詢可見性：`<queries><package android:name="com.ucare.fitos" /></queries>`
+- **高可用重連**：`EquipmentServiceClient` 內建自動重連、顯式 Intent 綁定與主執行緒派發；開發環境 `MockFitOSService` 實作 `IEquipmentService.Stub` 與 `DeathRecipient` 監聽。
 
-#### (1) `TreadmillMetric.aidl`
+#### (1) 主服務介面 (`IEquipmentService.aidl`)
 ```aidl
-package com.fitos.treadmill;
+package com.ucare.fitosequipmentsdk;
 
-parcelable TreadmillMetric;
-```
-包含欄位：
-- `speedKmh` (float): 即時時速（km/h）
-- `totalDistanceMeters` (double): 機台總累計刻度距離（公尺）
-- `incline` (float): 當前坡度百分比（如 1.0 代表 1% 坡度）
-- `cadence` (int): 步頻（SPM）
-- `timestamp` (long): 硬體底層時間戳記（毫秒）
-- `machineStatus` (int): 機台狀態（0: 待機, 1: 運轉中, 2: 暫停/急停）
-
-#### (2) `ITreadmillDataCallback.aidl`
-```aidl
-package com.fitos.treadmill;
-
-import com.fitos.treadmill.TreadmillMetric;
-
-oneway interface ITreadmillDataCallback {
-    void onMetricUpdated(in TreadmillMetric metric);
-    void onSafetyKeyTriggered(boolean isDetached);
+interface IEquipmentService {
+    int getApiVersion();
+    EquipmentState getConnectionState();
+    EquipmentSnapshot getSnapshot();
+    EquipmentLimits getLimits();
+    void registerCallback(IEquipmentCallback callback);
+    void unregisterCallback(IEquipmentCallback callback);
+    void startWorkout();
+    void stopWorkout();
+    void setResistance(int resistance);
+    void setIncline(int incline);
+    void setSpeed(double speed);
+    void setStairmillSpeedLevel(int level);
 }
 ```
 
-#### (3) `IFitOSService.aidl`
+#### (2) 回呼介面 (`IEquipmentCallback.aidl`)
 ```aidl
-package com.fitos.treadmill;
+package com.ucare.fitosequipmentsdk;
 
-import com.fitos.treadmill.ITreadmillDataCallback;
-import com.fitos.treadmill.TreadmillMetric;
-
-interface IFitOSService {
-    boolean registerCallback(ITreadmillDataCallback callback);
-    boolean unregisterCallback(ITreadmillDataCallback callback);
-    TreadmillMetric getCurrentMetric();
-    boolean setTargetSpeed(float speedKmh);
-    boolean setTargetIncline(float incline);
+interface IEquipmentCallback {
+    void onConnectionStateChanged(in EquipmentState state);
+    void onEquipmentDataChanged(in EquipmentSnapshot snapshot);
+    void onControlStateChanged(int controlState);
+    void onDeviceListChanged(in List<String> found, in List<String> bound);
 }
 ```
+
+#### (3) 核心資料模型
+- **`EquipmentSnapshot`**：包含 `speed` (km/h 或 mph), `distance` (km 或 mi), `incline`, `spm` (步頻), `hr` (心率), `pace`, `timeElapsed`, `calories`, `watt`, `elapsedRealtimeMillis`。
+- **`EquipmentState`**：包含 `connectionStatus` (connected/disconnected), `equipmentType` (Run/Bike/Row/Stairmill), `controlState` (-1 init / 0 stop / 1 start / 2 pause), `isMetric` (公/英制)。
+- **`EquipmentLimits`**：包含 `runSpeedMinKmh`, `runSpeedMaxKmh`, `runInclineMin`, `runInclineMax` 等硬體安全邊界。
 
 ### 2.2 本地計算引擎職責 (RaceCalculationEngine)
 1. **起跑基準校準 (Zeroing Calibration)**：

@@ -372,6 +372,7 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
     fun enterVerificationRace(profile: Profile? = null, cockpitMode: Boolean = false) {
         val p = profile ?: _state.value.profile
         saveProfileToPrefs(p)
+        treadmill.connect()
         val raceDist = 5000.0
         val myDist = 3230.0
         val sampleBoard = sampleLeaderboard(p.runnerId, myDist, raceDist)

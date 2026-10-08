@@ -2,9 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required to bind the FitOS equipment service -->
+    <uses-permission android:name="com.ucare.fitos.permission.EQUIPMENT_SERVICE" />
 
-    <!-- Android 11+ 套件可見性：不宣告就找不到 TTS 引擎，起跑人聲會初始化失敗 -->
+    <!-- Android 11+ 套件可見性：宣告 FitOS 服務與 TTS 引擎 -->
     <queries>
+        <package android:name="com.ucare.fitos" />
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>

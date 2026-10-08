@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FitOS Equipment SDK — Integration Guide v1</title>
+<style>
+/* ---------------------------------------------------------------- reset */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body,h1,h2,h3,h4,p,ul,ol,li,table,figure,pre{margin:0;padding:0}
+ul,ol{list-style:none}
+
+/* ---------------------------------------------------------------- theme */
+:root{
+  --bg:#ffffff;
+  --surface:#f7f8fa;
+  --surface-2:#eef1f5;
+  --text:#1a1d21;
+  --text-muted:#5c6470;
+  --text-faint:#858e9b;
+  --border:#e2e6ec;
+  --border-strong:#cdd4dd;
+  --accent:#0b5fc7;
+  --accent-soft:#e8f0fd;
+  --code-bg:#f5f7fa;
+  --code-text:#24292f;
+  --tok-key:#8250df;
+  --tok-str:#0a6640;
+  --tok-com:#7d8590;
+  --tok-num:#b3541e;
+  --tok-tag:#0550ae;
+  --warn-bg:#fff6e8;--warn-bd:#e8a33d;--warn-fg:#8a5200;
+  --info-bg:#eaf2fe;--info-bd:#4a8fe0;--info-fg:#144a8a;
+  --tip-bg:#eaf7ee; --tip-bd:#4ba86a; --tip-fg:#1a5e33;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
+  --radius:8px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans CJK TC","Microsoft JhengHei",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#131619;--surface:#1a1e23;--surface-2:#222831;
+    --text:#e6e9ed;--text-muted:#9aa4b1;--text-faint:#7b8592;
+    --border:#282e36;--border-strong:#3a424d;
+    --accent:#5aa2f0;--accent-soft:#16283f;
+    --code-bg:#1a1e23;--code-text:#d7dce3;
+    --tok-key:#c397f0;--tok-str:#7ec699;--tok-com:#6e7781;--tok-num:#e0966a;--tok-tag:#79b8ff;
+    --warn-bg:#2a2113;--warn-bd:#b8862f;--warn-fg:#f0c47a;
+    --info-bg:#152436;--info-bd:#3f7cc0;--info-fg:#8fc0f5;
+    --tip-bg:#152a1d; --tip-bd:#3d8a58; --tip-fg:#8ad0a3;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 1px 3px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131619;--surface:#1a1e23;--surface-2:#222831;
+  --text:#e6e9ed;--text-muted:#9aa4b1;--text-faint:#7b8592;
+  --border:#282e36;--border-strong:#3a424d;
+  --accent:#5aa2f0;--accent-soft:#16283f;
+  --code-bg:#1a1e23;--code-text:#d7dce3;
+  --tok-key:#c397f0;--tok-str:#7ec699;--tok-com:#6e7781;--tok-num:#e0966a;--tok-tag:#79b8ff;
+  --warn-bg:#2a2113;--warn-bd:#b8862f;--warn-fg:#f0c47a;
+  --info-bg:#152436;--info-bd:#3f7cc0;--info-fg:#8fc0f5;
+  --tip-bg:#152a1d; --tip-bd:#3d8a58; --tip-fg:#8ad0a3;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 1px 3px rgba(0,0,0,.25);
+}
+:root[data-theme="light"]{
+  --bg:#ffffff;--surface:#f7f8fa;--surface-2:#eef1f5;
+  --text:#1a1d21;--text-muted:#5c6470;--text-faint:#858e9b;
+  --border:#e2e6ec;--border-strong:#cdd4dd;
+  --accent:#0b5fc7;--accent-soft:#e8f0fd;
+  --code-bg:#f5f7fa;--code-text:#24292f;
+  --tok-key:#8250df;--tok-str:#0a6640;--tok-com:#7d8590;--tok-num:#b3541e;--tok-tag:#0550ae;
+  --warn-bg:#fff6e8;--warn-bd:#e8a33d;--warn-fg:#8a5200;
+  --info-bg:#eaf2fe;--info-bd:#4a8fe0;--info-fg:#144a8a;
+  --tip-bg:#eaf7ee; --tip-bd:#4ba86a; --tip-fg:#1a5e33;
+}
+
+/* ---------------------------------------------------------------- base */
+body{
+  font-family:var(--sans);
+  background:var(--bg);color:var(--text);
+  font-size:15.5px;line-height:1.72;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:.875em}
+:not(pre)>code{
+  background:var(--surface-2);border:1px solid var(--border);
+  padding:.1em .38em;border-radius:4px;color:var(--text);
+  white-space:nowrap;
+}
+
+/* ------------------------------------------------------------ language */
+[data-lang="zh"] .en{display:none}
+[data-lang="en"] .zh{display:none}
+[data-lang="zh"] span.en,[data-lang="en"] span.zh{display:none}
+
+/* -------------------------------------------------------------- header */
+header{
+  position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:saturate(180%) blur(12px);
+  -webkit-backdrop-filter:saturate(180%) blur(12px);
+  border-bottom:1px solid var(--border);
+}
+.hdr-in{
+  max-width:1240px;margin:0 auto;padding:.7rem 1.5rem;
+  display:flex;align-items:center;gap:1rem;
+}
+.brand{display:flex;align-items:baseline;gap:.6rem;min-width:0}
+.brand .nm{font-weight:640;font-size:1rem;letter-spacing:-.01em;white-space:nowrap}
+.brand .sub{color:var(--text-faint);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hdr-sp{flex:1}
+.pill{
+  font-size:.72rem;font-weight:600;letter-spacing:.02em;
+  background:var(--accent-soft);color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);
+  padding:.16rem .5rem;border-radius:999px;white-space:nowrap;
+}
+.seg{
+  display:inline-flex;background:var(--surface-2);
+  border:1px solid var(--border);border-radius:7px;padding:2px;gap:2px;
+}
+.seg button{
+  font:inherit;font-size:.78rem;font-weight:560;
+  border:0;background:transparent;color:var(--text-muted);
+  padding:.22rem .62rem;border-radius:5px;cursor:pointer;
+  transition:background .12s,color .12s;
+}
+.seg button:hover{color:var(--text)}
+.seg button[aria-pressed="true"]{background:var(--bg);color:var(--text);box-shadow:var(--shadow)}
+.icon-btn{
+  font:inherit;font-size:.95rem;line-height:1;
+  border:1px solid var(--border);background:var(--surface-2);color:var(--text-muted);
+  width:2rem;height:2rem;border-radius:7px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.icon-btn:hover{color:var(--text)}
+
+/* --------------------------------------------------------------- shell */
+.shell{max-width:1240px;margin:0 auto;padding:0 1.5rem;display:flex;gap:3rem;align-items:flex-start}
+nav.toc{
+  position:sticky;top:4rem;flex:0 0 232px;width:232px;
+  max-height:calc(100vh - 5rem);overflow-y:auto;
+  padding:2rem 0 3rem;font-size:.845rem;
+}
+nav.toc .grp{
+  text-transform:uppercase;letter-spacing:.07em;font-size:.68rem;
+  font-weight:680;color:var(--text-faint);margin:1.35rem 0 .5rem;
+}
+nav.toc .grp:first-child{margin-top:0}
+nav.toc a{
+  display:block;padding:.25rem .7rem;margin-left:-.7rem;
+  color:var(--text-muted);border-radius:6px;line-height:1.5;
+  border-left:2px solid transparent;
+}
+nav.toc a:hover{color:var(--text);background:var(--surface);text-decoration:none}
+nav.toc a.on{color:var(--accent);font-weight:600;border-left-color:var(--accent);background:var(--accent-soft)}
+.toc-toggle{display:none}
+
+main{flex:1;min-width:0;padding:2.5rem 0 6rem;max-width:820px}
+
+/* ------------------------------------------------------------ headings */
+h1{font-size:2.1rem;line-height:1.22;letter-spacing:-.022em;font-weight:700;margin-bottom:.6rem}
+.lede{font-size:1.06rem;color:var(--text-muted);line-height:1.65;max-width:64ch}
+h2{
+  font-size:1.42rem;letter-spacing:-.015em;font-weight:660;line-height:1.3;
+  margin:3.5rem 0 1rem;padding-top:1.6rem;border-top:1px solid var(--border);
+  scroll-margin-top:4.5rem;
+}
+main > section:first-of-type h2{border-top:0;padding-top:0;margin-top:2.6rem}
+h3{font-size:1.06rem;font-weight:640;margin:2.1rem 0 .7rem;letter-spacing:-.008em;scroll-margin-top:4.5rem}
+h4{font-size:.95rem;font-weight:640;margin:1.5rem 0 .5rem;color:var(--text)}
+p{margin:0 0 1rem}
+p:last-child{margin-bottom:0}
+
+/* ---------------------------------------------------------------- meta */
+.meta{
+  display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;margin:1.6rem 0 0;
+  padding:.85rem 1.1rem;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);font-size:.85rem;
+}
+.meta div{display:flex;gap:.45rem;align-items:baseline}
+.meta dt{color:var(--text-faint);font-weight:500}
+.meta dd{margin:0;font-weight:580;font-family:var(--mono);font-size:.8rem}
+
+/* --------------------------------------------------------------- lists */
+.ul{margin:0 0 1rem;padding-left:0}
+.ul li{position:relative;padding-left:1.15rem;margin-bottom:.42rem}
+.ul li::before{
+  content:"";position:absolute;left:.28rem;top:.72em;
+  width:4px;height:4px;border-radius:50%;background:var(--border-strong);
+}
+.ol{counter-reset:s;margin:0 0 1rem}
+.ol > li{position:relative;padding-left:2.1rem;margin-bottom:1.4rem;counter-increment:s}
+.ol > li::before{
+  content:counter(s);position:absolute;left:0;top:.08em;
+  width:1.45rem;height:1.45rem;border-radius:50%;
+  background:var(--accent);color:#fff;
+  font-size:.76rem;font-weight:680;font-family:var(--mono);
+  display:flex;align-items:center;justify-content:center;
+}
+.ol > li > h3{margin-top:0}
+
+/* ------------------------------------------------------------- callout */
+.cal{
+  border:1px solid;border-left-width:3px;border-radius:var(--radius);
+  padding:.85rem 1.05rem;margin:1.25rem 0;font-size:.9rem;line-height:1.65;
+}
+.cal .t{font-weight:660;display:block;margin-bottom:.28rem;font-size:.85rem;letter-spacing:.005em}
+.cal p{margin-bottom:.55rem}
+.cal :last-child{margin-bottom:0}
+.cal.warn{background:var(--warn-bg);border-color:var(--warn-bd);color:var(--text)}
+.cal.warn .t{color:var(--warn-fg)}
+.cal.info{background:var(--info-bg);border-color:var(--info-bd);color:var(--text)}
+.cal.info .t{color:var(--info-fg)}
+.cal.tip{background:var(--tip-bg);border-color:var(--tip-bd);color:var(--text)}
+.cal.tip .t{color:var(--tip-fg)}
+.cal .ul li::before{background:currentColor;opacity:.4}
+
+/* --------------------------------------------------------------- table */
+.tw{overflow-x:auto;margin:1.1rem 0 1.4rem;border:1px solid var(--border);border-radius:var(--radius)}
+table{border-collapse:collapse;width:100%;font-size:.855rem;line-height:1.55}
+th,td{padding:.58rem .85rem;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{
+  background:var(--surface);font-weight:640;font-size:.76rem;
+  text-transform:uppercase;letter-spacing:.045em;color:var(--text-muted);
+  white-space:nowrap;position:sticky;top:0;
+}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface)}
+td code,th code{white-space:nowrap}
+.nw{white-space:nowrap}
+td.sig{font-family:var(--mono);font-size:.79rem;white-space:nowrap;font-weight:520}
+
+/* ---------------------------------------------------------------- code */
+figure.code{
+  margin:1.1rem 0 1.4rem;border:1px solid var(--border);
+  border-radius:var(--radius);overflow:hidden;background:var(--code-bg);
+}
+figure.code figcaption{
+  display:flex;align-items:center;gap:.6rem;
+  padding:.42rem .55rem .42rem .9rem;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  font-size:.74rem;font-weight:620;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.05em;
+}
+figure.code figcaption .sp{flex:1}
+.copy{
+  font:inherit;font-size:.7rem;font-weight:600;letter-spacing:.02em;
+  border:1px solid var(--border-strong);background:var(--bg);color:var(--text-muted);
+  padding:.16rem .5rem;border-radius:5px;cursor:pointer;text-transform:none;
+}
+.copy:hover{color:var(--text);border-color:var(--text-faint)}
+.copy.ok{color:var(--tip-fg);border-color:var(--tip-bd)}
+pre{overflow-x:auto;padding:.9rem 1.1rem;font-family:var(--mono);font-size:.815rem;line-height:1.68;color:var(--code-text);tab-size:4}
+pre code{font-size:inherit;background:0;border:0;padding:0;white-space:pre}
+.k{color:var(--tok-key)}.s{color:var(--tok-str)}.c{color:var(--tok-com);font-style:italic}
+.n{color:var(--tok-num)}.t{color:var(--tok-tag)}
+
+/* --------------------------------------------------------------- misc */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.1rem 0 1.4rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.9rem 1.05rem}
+.card h4{margin:0 0 .3rem;font-size:.88rem}
+.card p{font-size:.855rem;color:var(--text-muted);margin:0}
+footer{
+  border-top:1px solid var(--border);margin-top:2rem;padding:1.6rem 0 0;
+  font-size:.82rem;color:var(--text-faint);
+}
+
+/* ---------------------------------------------------------- responsive */
+@media (max-width:960px){
+  .shell{display:block;padding:0 1.25rem}
+  main{max-width:none;padding-top:1.5rem}
+  nav.toc{
+    position:static;width:auto;max-height:none;flex:none;
+    padding:1rem 0 0;border-bottom:1px solid var(--border);
+  }
+  nav.toc .inner{display:none;padding-bottom:1rem}
+  nav.toc.open .inner{display:block}
+  nav.toc .grp{margin-top:1rem}
+  .toc-toggle{
+    display:flex;align-items:center;gap:.5rem;width:100%;
+    font:inherit;font-size:.85rem;font-weight:600;
+    border:1px solid var(--border);background:var(--surface);color:var(--text);
+    padding:.5rem .8rem;border-radius:var(--radius);cursor:pointer;margin-bottom:1rem;
+  }
+  .toc-toggle .chev{margin-left:auto;transition:transform .15s;font-size:.7rem;color:var(--text-faint)}
+  nav.toc.open .toc-toggle .chev{transform:rotate(180deg)}
+  .grid2{grid-template-columns:1fr}
+  h1{font-size:1.72rem}
+  h2{font-size:1.26rem;margin-top:2.8rem}
+  .brand .sub{display:none}
+}
+@media (max-width:560px){
+  body{font-size:15px}
+  .hdr-in{padding:.6rem 1rem;gap:.6rem}
+  .shell{padding:0 1rem}
+  .pill{display:none}
+  .meta{flex-direction:column;gap:.3rem}
+}
+@media print{
+  header,nav.toc,.copy{display:none}
+  .shell{display:block}
+  main{max-width:none}
+  figure.code,.tw,.cal{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-in">
+    <div class="brand">
+      <span class="nm">FitOS Equipment SDK</span>
+      <span class="sub zh">整合指南</span>
+      <span class="sub en">Integration Guide</span>
+    </div>
+    <span class="hdr-sp"></span>
+    <span class="pill">API v1</span>
+    <div class="seg" role="group" aria-label="Language">
+      <button type="button" id="btn-zh" aria-pressed="true">中文</button>
+      <button type="button" id="btn-en" aria-pressed="false">EN</button>
+    </div>
+    <button type="button" class="icon-btn" id="theme" aria-label="Toggle colour theme">◐</button>
+  </div>
+</header>
+
+<div class="shell">
+
+<nav class="toc" id="toc">
+  <button type="button" class="toc-toggle" id="toc-toggle" aria-expanded="false">
+    <span class="zh">目錄</span><span class="en">Contents</span>
+    <span class="chev">▼</span>
+  </button>
+  <div class="inner">
+    <div class="grp"><span class="zh">開始</span><span class="en">Getting started</span></div>
+    <a href="#overview"><span class="zh">概覽</span><span class="en">Overview</span></a>
+    <a href="#quickstart"><span class="zh">快速開始</span><span class="en">Quick start</span></a>
+    <a href="#examples"><span class="zh">完整範例</span><span class="en">Complete examples</span></a>
+
+    <div class="grp"><span class="zh">API 參考</span><span class="en">API reference</span></div>
+    <a href="#api-query"><span class="zh">查詢方法</span><span class="en">Query methods</span></a>
+    <a href="#api-events"><span class="zh">事件註冊</span><span class="en">Event registration</span></a>
+    <a href="#api-control"><span class="zh">控制方法</span><span class="en">Control methods</span></a>
+    <a href="#callbacks"><span class="zh">回呼介面</span><span class="en">Callbacks</span></a>
+    <a href="#matrix"><span class="zh">設備控制對照表</span><span class="en">Control support matrix</span></a>
+
+    <div class="grp"><span class="zh">資料模型</span><span class="en">Data models</span></div>
+    <a href="#m-state">EquipmentState</a>
+    <a href="#m-snapshot">EquipmentSnapshot</a>
+    <a href="#m-limits">EquipmentLimits</a>
+    <a href="#m-contract">EquipmentSdkContract</a>
+
+    <div class="grp"><span class="zh">實務須知</span><span class="en">Practical notes</span></div>
+    <a href="#notes"><span class="zh">重要注意事項</span><span class="en">Important notes</span></a>
+    <a href="#lifecycle"><span class="zh">生命週期與重連</span><span class="en">Lifecycle &amp; reconnect</span></a>
+    <a href="#troubleshoot"><span class="zh">疑難排解</span><span class="en">Troubleshooting</span></a>
+    <a href="#compat"><span class="zh">版本相容性</span><span class="en">Versioning</span></a>
+  </div>
+</nav>
+
+<main>
+
+<h1>
+  <span class="zh">FitOS Equipment SDK 整合指南</span>
+  <span class="en">FitOS Equipment SDK Integration Guide</span>
+</h1>
+<p class="lede">
+  <span class="zh">讓你的 Android App 透過 FitOS 主機讀取健身設備的即時運動數據,並控制速度、坡度、阻力與訓練啟停。本文件涵蓋 API v1 的全部公開介面。</span>
+  <span class="en">Read live workout telemetry from fitness equipment through the FitOS host, and control speed, incline, resistance and workout start/stop — from your own Android app. This document covers the complete public surface of API v1.</span>
+</p>
+
+<dl class="meta">
+  <div><dt class="zh">契約版本</dt><dt class="en">API version</dt><dd>1</dd></div>
+  <div><dt class="zh">最低版本</dt><dt class="en">Min SDK</dt><dd>Android 6.0 (API 23)</dd></div>
+  <div><dt class="zh">相依套件</dt><dt class="en">Dependencies</dt><dd class="zh">無</dd><dd class="en">none</dd></div>
+  <div><dt class="zh">傳輸機制</dt><dt class="en">Transport</dt><dd>AIDL / Binder</dd></div>
+</dl>
+
+<!-- ============================================================ OVERVIEW -->
+<section>
+<h2 id="overview"><span class="zh">概覽</span><span class="en">Overview</span></h2>
+
+<p class="zh">FitOS 是健身機台上的主控 App。你的 App 透過一個 <strong>AIDL bound service</strong> 與 FitOS 溝通,即可讀取設備的即時運動數據、查詢設備狀態,並送出控制指令。</p>
+<p class="en">FitOS is the console app on the equipment. Your app talks to it through an <strong>AIDL bound service</strong> — that is how you read live workout telemetry, query equipment state and send control commands.</p>
+
+<h3><span class="zh">你可以做什麼</span><span class="en">What you can do</span></h3>
+<div class="grid2">
+  <div class="card">
+    <h4><span class="zh">讀即時運動數據</span><span class="en">Live telemetry</span></h4>
+    <p class="zh">速度、心率、距離、卡路里、功率、阻力、坡度、迴轉數、步頻、划船與爬梯數據等 37 個欄位,每秒推送一次。</p>
+    <p class="en">37 fields — speed, heart rate, distance, calories, power, resistance, incline, cadence, stride rate, rowing and stepping metrics — pushed roughly once per second.</p>
+  </div>
+  <div class="card">
+    <h4><span class="zh">控制設備</span><span class="en">Control the machine</span></h4>
+    <p class="zh">設定速度、坡度、阻力、爬梯段速,以及啟動 / 停止機台訓練。</p>
+    <p class="en">Set speed, incline, resistance and stairmill speed level; start and stop the workout on the machine.</p>
+  </div>
+  <div class="card">
+    <h4><span class="zh">讀設備狀態</span><span class="en">Read equipment state</span></h4>
+    <p class="zh">連線狀態、設備型別、裝置名稱、型號、硬體與韌體版本、控制狀態與單位制。</p>
+    <p class="en">Connection status, equipment type, device name, model, hardware and firmware version, control state and unit system.</p>
+  </div>
+  <div class="card">
+    <h4><span class="zh">讀控制範圍</span><span class="en">Read control ranges</span></h4>
+    <p class="zh">每種設備的阻力 / 坡度 / 速度 / 段速上下限,用來畫 UI 滑桿或做輸入驗證。</p>
+    <p class="en">Per-equipment minimum and maximum for resistance, incline, speed and level — for building sliders or validating input.</p>
+  </div>
+</div>
+
+<h3><span class="zh">支援的設備型別</span><span class="en">Supported equipment types</span></h3>
+<p class="zh">飛輪(<code>Bike</code>)、划船機(<code>Row</code>)、跑步機(<code>Run</code>,含一般跑步機與弧形跑步機)、爬梯機(<code>Stairmill</code>)。</p>
+<p class="en">Bike (<code>Bike</code>), rower (<code>Row</code>), treadmill (<code>Run</code>, covering both standard and curved treadmills), and stairmill (<code>Stairmill</code>).</p>
+
+<div class="cal info">
+  <span class="t"><span class="zh">連線通道對你是透明的</span><span class="en">Connection channels are transparent to you</span></span>
+  <p class="zh">設備可能透過 BLE、USB 或 UART 與機台連接。FitOS 負責處理所有通道差異;你拿到的 API 與資料格式在三種通道下完全一致,不需要為此寫任何分支邏輯。</p>
+  <p class="en">Equipment may be attached over BLE, USB or UART. FitOS absorbs every difference between them — the API and the data you receive are identical in all three cases, so you never need to branch on the channel.</p>
+</div>
+
+<div class="cal info">
+  <span class="t"><span class="zh">設備連線由 FitOS 管理</span><span class="en">FitOS manages the equipment connection</span></span>
+  <p class="zh">設備的配對與連線由 FitOS 處理。你的 App 透過 <code>onConnectionStateChanged</code> 觀察目前的連線狀態與設備型別,並據此調整 UI — 例如尚未連線時停用控制項。</p>
+  <p class="en">Pairing and connecting to the equipment is handled by FitOS. Your app observes the current connection status and equipment type through <code>onConnectionStateChanged</code> and adapts its UI accordingly — for example, disabling controls while nothing is connected.</p>
+</div>
+</section>
+
+<!-- ========================================================== QUICKSTART -->
+<section>
+<h2 id="quickstart"><span class="zh">快速開始</span><span class="en">Quick start</span></h2>
+
+<ol class="ol">
+<li>
+<h3><span class="zh">引入 SDK</span><span class="en">Add the SDK</span></h3>
+<p class="zh">由 FitOS 團隊提供 <code>FitOSEquipmentSDK-release.aar</code>。放進你的 <code>app/libs/</code>:</p>
+<p class="en">The FitOS team provides <code>FitOSEquipmentSDK-release.aar</code>. Drop it into your <code>app/libs/</code>:</p>
+<figure class="code">
+  <figcaption>app/build.gradle<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">dependencies</span> {
+    implementation files(<span class="s">'libs/FitOSEquipmentSDK-release.aar'</span>)
+}</code></pre>
+</figure>
+<p class="zh">SDK 零外部相依,只使用 <code>android.*</code> API,不會與你既有的任何函式庫衝突。</p>
+<p class="en">The SDK has no external dependencies — it uses only <code>android.*</code> APIs, so it cannot conflict with anything already in your project.</p>
+</li>
+
+<li>
+<h3><span class="zh">宣告 Manifest</span><span class="en">Declare your manifest</span></h3>
+<figure class="code">
+  <figcaption>AndroidManifest.xml<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="c">&lt;!-- Required to bind the FitOS equipment service --&gt;</span>
+<span class="t">&lt;uses-permission</span> android:name=<span class="s">"com.ucare.fitos.permission.EQUIPMENT_SERVICE"</span> <span class="t">/&gt;</span>
+
+<span class="c">&lt;!-- Required when your targetSdk is 30+, otherwise bindService fails silently --&gt;</span>
+<span class="t">&lt;queries&gt;</span>
+    <span class="t">&lt;package</span> android:name=<span class="s">"com.ucare.fitos"</span> <span class="t">/&gt;</span>
+<span class="t">&lt;/queries&gt;</span></code></pre>
+</figure>
+<div class="cal warn">
+  <span class="t"><span class="zh">漏掉 <code>&lt;queries&gt;</code> 是最常見的整合失敗原因</span><span class="en">A missing <code>&lt;queries&gt;</code> is the most common integration failure</span></span>
+  <p class="zh">Android 11(API 30)起的套件可見性限制會讓你「看不到」FitOS 的服務,<code>bindService()</code> 會直接回傳 <code>false</code>,而且<strong>不會拋出任何例外</strong>。只要你的 <code>targetSdk</code> ≥ 30 就一定要加。</p>
+  <p class="en">Package visibility on Android 11 (API 30) and above hides the FitOS service from your app: <code>bindService()</code> simply returns <code>false</code> and <strong>throws nothing</strong>. If your <code>targetSdk</code> is 30 or higher, this block is mandatory.</p>
+</div>
+</li>
+
+<li>
+<h3><span class="zh">綁定服務</span><span class="en">Bind the service</span></h3>
+<p class="zh">建議使用隨 SDK 附上的 <code>EquipmentServiceClient</code>,它會處理顯式 intent、回呼註冊、以及主機重啟後的自動重連,並把所有回呼轉到主執行緒。</p>
+<p class="en">Use the bundled <code>EquipmentServiceClient</code> helper — it handles the explicit intent, callback registration and automatic reconnection after a host restart, and delivers every callback on your main thread.</p>
+<figure class="code">
+  <figcaption>Kotlin<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">val</span> client = EquipmentServiceClient(context, <span class="k">object</span> : EquipmentServiceClient.Callback() {
+    <span class="k">override fun</span> onServiceConnected() {
+        Log.d(<span class="s">"Demo"</span>, <span class="s">"connected, apiVersion=</span>${client.apiVersion}<span class="s">"</span>)
+    }
+    <span class="k">override fun</span> onEquipmentDataChanged(snapshot: EquipmentSnapshot) {
+        speedView.text = snapshot.speed
+        hrView.text    = snapshot.hr
+    }
+})
+
+<span class="c">// Typically in onStart() / onStop()</span>
+client.connect()
+client.disconnect()</code></pre>
+</figure>
+</li>
+</ol>
+
+<div class="cal info">
+  <span class="t"><span class="zh">安裝順序</span><span class="en">Installation order</span></span>
+  <p class="zh">FitOS 定義了那組自訂權限,所以它必須<strong>先於</strong>你的 App 安裝在機台上。出廠機台已預裝 FitOS,一般不需處理;只有在裸機或重新刷機測試時才要注意先後順序。</p>
+  <p class="en">FitOS defines the custom permission, so it must be installed on the device <strong>before</strong> your app. Production units ship with FitOS pre-installed, so this normally takes care of itself — it only matters when testing on a wiped or freshly flashed device.</p>
+</div>
+</section>
+
+<!-- =========================================================== EXAMPLES -->
+<section>
+<h2 id="examples"><span class="zh">完整範例</span><span class="en">Complete examples</span></h2>
+
+<h3><span class="zh">使用 <code>EquipmentServiceClient</code>(建議)</span><span class="en">Using <code>EquipmentServiceClient</code> (recommended)</span></h3>
+<figure class="code">
+  <figcaption>Kotlin — Activity<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">class</span> WorkoutActivity : Activity() {
+
+    <span class="k">private var</span> limits: EquipmentLimits?   = <span class="k">null</span>
+    <span class="k">private var</span> state:  EquipmentState?    = <span class="k">null</span>
+    <span class="k">private var</span> last:   EquipmentSnapshot? = <span class="k">null</span>
+
+    <span class="k">private val</span> client = EquipmentServiceClient(<span class="k">this</span>, <span class="k">object</span> : EquipmentServiceClient.Callback() {
+
+        <span class="k">override fun</span> onServiceConnected() {
+            <span class="c">// Cache the control ranges once — they rarely change.</span>
+            limits = client.limits
+        }
+
+        <span class="k">override fun</span> onServiceDisconnected() {
+            statusView.text = <span class="s">"FitOS unavailable — reconnecting"</span>
+        }
+
+        <span class="k">override fun</span> onConnectionStateChanged(s: EquipmentState) {
+            state = s
+            statusView.text = <span class="s">"</span>${s.connectionStatus}<span class="s"> · </span>${s.equipmentType}<span class="s">"</span>
+            controlPanel.isEnabled = s.connectionStatus == EquipmentSdkContract.STATUS_CONNECTED
+        }
+
+        <span class="k">override fun</span> onEquipmentDataChanged(snapshot: EquipmentSnapshot) {
+            <span class="c">// ~1/sec. Keep the latest tick so the controls below can read</span>
+            <span class="c">// current values without another cross-process call.</span>
+            last = snapshot
+            <span class="c">// Empty string means "not applicable to this equipment".</span>
+            timeView.text     = snapshot.timeElapsed
+            speedView.text    = snapshot.speed
+            hrView.text       = snapshot.hr
+            distanceView.text = snapshot.distance
+            wattView.text     = snapshot.watt
+        }
+
+        <span class="k">override fun</span> onControlStateChanged(controlState: <span class="k">Int</span>) {
+            startButton.isEnabled =
+                controlState != EquipmentSdkContract.CONTROL_STATE_START
+        }
+    })
+
+    <span class="k">override fun</span> onStart() { <span class="k">super</span>.onStart(); client.connect() }
+    <span class="k">override fun</span> onStop()  { client.disconnect(); <span class="k">super</span>.onStop() }
+
+    <span class="c">// --- controls -------------------------------------------------------</span>
+
+    <span class="k">private fun</span> bumpResistance(delta: <span class="k">Int</span>) {
+        <span class="k">val</span> l = limits ?: <span class="k">return</span>
+        <span class="k">val</span> s = state  ?: <span class="k">return</span>
+        <span class="k">val</span> now = last?.resistance?.toIntOrNull() ?: <span class="k">return</span>
+
+        <span class="c">// Pick the range that belongs to the connected equipment.</span>
+        <span class="k">val</span> (min, max) = <span class="k">when</span> {
+            s.equipmentType == EquipmentSdkContract.TYPE_ROW -&gt;
+                l.rowResistanceMin <span class="k">to</span> l.rowResistanceMax
+            s.runType == EquipmentSdkContract.RUN_TYPE_CURVED -&gt;
+                l.curvedResistanceMin <span class="k">to</span> l.curvedResistanceMax
+            <span class="k">else</span> -&gt;
+                l.bikeResistanceMin <span class="k">to</span> l.bikeResistanceMax
+        }
+        client.setResistance((now + delta).coerceIn(min, max))
+    }
+
+    <span class="k">private fun</span> bumpSpeed(deltaKmh: <span class="k">Double</span>) {
+        <span class="k">val</span> l = limits ?: <span class="k">return</span>
+        <span class="k">val</span> s = state  ?: <span class="k">return</span>
+        <span class="k">val</span> nowDisplay = last?.speed?.toDoubleOrNull() ?: <span class="k">return</span>
+
+        <span class="c">// Snapshot + setSpeed use the console unit; limits are always km/h.</span>
+        <span class="k">val</span> nowKmh = <span class="k">if</span> (s.isMetric) nowDisplay <span class="k">else</span> nowDisplay * <span class="n">1.60934</span>
+        <span class="k">val</span> tgtKmh = (nowKmh + deltaKmh)
+            .coerceIn(l.runSpeedMinKmh, l.runSpeedMaxKmh)
+
+        client.setSpeed(<span class="k">if</span> (s.isMetric) tgtKmh <span class="k">else</span> tgtKmh / <span class="n">1.60934</span>)
+    }
+}</code></pre>
+</figure>
+
+<h3><span class="zh">手動綁定(不使用 helper)</span><span class="en">Binding manually (without the helper)</span></h3>
+<figure class="code">
+  <figcaption>Java<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">private</span> IEquipmentService service;
+
+<span class="k">private final</span> IEquipmentCallback callback = <span class="k">new</span> IEquipmentCallback.Stub() {
+    <span class="c">// NOTE: these arrive on a binder thread, NOT the main thread.</span>
+    <span class="k">public void</span> onConnectionStateChanged(EquipmentState s) { post(() -&gt; render(s)); }
+    <span class="k">public void</span> onEquipmentDataChanged(EquipmentSnapshot d) { post(() -&gt; render(d)); }
+    <span class="k">public void</span> onControlStateChanged(<span class="k">int</span> controlState) { }
+    <span class="k">public void</span> onDeviceListChanged(List&lt;String&gt; found, List&lt;String&gt; bound) { }
+};
+
+<span class="k">private final</span> ServiceConnection conn = <span class="k">new</span> ServiceConnection() {
+    <span class="k">public void</span> onServiceConnected(ComponentName n, IBinder b) {
+        service = IEquipmentService.Stub.asInterface(b);
+        <span class="k">try</span> {
+            service.registerCallback(callback);
+        } <span class="k">catch</span> (RemoteException e) {
+            <span class="c">// Host died between bind and this call; wait for a rebind.</span>
+        }
+    }
+    <span class="k">public void</span> onServiceDisconnected(ComponentName n) {
+        service = <span class="k">null</span>;          <span class="c">// host process died; binding survives</span>
+    }
+    <span class="k">public void</span> onNullBinding(ComponentName n) {
+        <span class="c">// The equipment interface is not available on this host build.</span>
+        service = <span class="k">null</span>;
+        showUnsupported();
+    }
+};
+
+<span class="c">// The intent MUST be explicit — set both the action and the package.</span>
+Intent intent = <span class="k">new</span> Intent(EquipmentSdkContract.ACTION_BIND)
+        .setPackage(EquipmentSdkContract.HOST_PACKAGE);
+
+<span class="k">boolean</span> ok = context.bindService(intent, conn, Context.BIND_AUTO_CREATE);
+<span class="k">if</span> (!ok) {
+    <span class="c">// Missing &lt;queries&gt;, or FitOS is not installed.</span>
+    context.unbindService(conn);   <span class="c">// still required, even when false</span>
+}</code></pre>
+</figure>
+<div class="cal warn">
+  <span class="t"><span class="zh">手動綁定時回呼在 binder 執行緒抵達</span><span class="en">Manual bindings deliver callbacks on a binder thread</span></span>
+  <p class="zh">上面四個回呼<strong>不在主執行緒</strong>,直接更新 View 會拋 <code>CalledFromWrongThreadException</code>。請自行 post 回主執行緒,或改用 <code>EquipmentServiceClient</code>(已代為處理)。</p>
+  <p class="en">The four callbacks above run on a binder thread, <strong>not</strong> the main thread — touching a View directly will throw <code>CalledFromWrongThreadException</code>. Post to the main thread yourself, or use <code>EquipmentServiceClient</code>, which already does it for you.</p>
+</div>
+</section>
+
+<!-- ========================================================== API QUERY -->
+<section>
+<h2 id="api-query"><span class="zh">查詢方法</span><span class="en">Query methods</span></h2>
+<p class="zh">同步方法,由主機端快取回答,不會阻塞在硬體通訊上。</p>
+<p class="en">Synchronous methods, answered from a host-side cache — they never block on hardware I/O.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">方法</span><span class="en">Method</span></th>
+  <th><span class="zh">回傳</span><span class="en">Returns</span></th>
+  <th><span class="zh">說明</span><span class="en">Description</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td class="sig">getApiVersion()</td><td class="nw"><code>int</code></td>
+  <td><span class="zh">主機實作的契約版本。目前為 <code>1</code>。用來做功能偵測。</span><span class="en">Contract version implemented by the host — currently <code>1</code>. Use it for feature detection.</span></td>
+</tr>
+<tr>
+  <td class="sig">getConnectionState()</td><td class="nw"><code>EquipmentState</code></td>
+  <td><span class="zh">目前的連線 / 設備 / 模式狀態。<a href="#m-state">見資料模型</a>。</span><span class="en">Current connection, device and mode state. <a href="#m-state">See data model</a>.</span></td>
+</tr>
+<tr>
+  <td class="sig">getSnapshot()</td><td class="nw"><code>EquipmentSnapshot</code></td>
+  <td><span class="zh">最近一筆遙測。<a href="#m-snapshot">見資料模型</a>。</span><span class="en">The most recent telemetry tick. <a href="#m-snapshot">See data model</a>.</span></td>
+</tr>
+<tr>
+  <td class="sig">getLimits()</td><td class="nw"><code>EquipmentLimits</code></td>
+  <td><span class="zh">各設備型別的控制範圍。<a href="#m-limits">見資料模型</a>。</span><span class="en">Control ranges per equipment type. <a href="#m-limits">See data model</a>.</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal warn">
+  <span class="t"><span class="zh">這是跨 process 的同步呼叫 — 不要輪詢</span><span class="en">These are synchronous cross-process calls — do not poll them</span></span>
+  <p class="zh">每次呼叫都是一次完整的 binder transaction。<code>getLimits()</code> 取一次快取起來即可;即時數據請訂閱 <code>onEquipmentDataChanged</code> 串流,不要用 timer 每秒呼叫 <code>getSnapshot()</code>。在主執行緒的高頻率呼叫會拖慢你的 UI。</p>
+  <p class="en">Every call is a full binder transaction. Call <code>getLimits()</code> once and cache the result; for live data subscribe to the <code>onEquipmentDataChanged</code> stream rather than polling <code>getSnapshot()</code> on a timer. High-frequency calls from the main thread will make your UI stutter.</p>
+</div>
+</section>
+
+<!-- ========================================================= API EVENTS -->
+<section>
+<h2 id="api-events"><span class="zh">事件註冊</span><span class="en">Event registration</span></h2>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">方法</span><span class="en">Method</span></th>
+  <th><span class="zh">說明</span><span class="en">Description</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td class="sig">registerCallback(IEquipmentCallback cb)</td>
+  <td><span class="zh">註冊事件回呼。註冊後主機會<strong>立即補推</strong>一次完整的 <code>onConnectionStateChanged</code>、<code>onEquipmentDataChanged</code> 與 <code>onDeviceListChanged</code>,所以晚加入也能立刻取得當前狀態,不需要另外呼叫查詢方法初始化。</span><span class="en">Registers an event callback. Immediately after registration the host <strong>replays</strong> a full <code>onConnectionStateChanged</code>, <code>onEquipmentDataChanged</code> and <code>onDeviceListChanged</code>, so a late joiner starts fully initialised — no separate priming query needed.</span></td>
+</tr>
+<tr>
+  <td class="sig">unregisterCallback(IEquipmentCallback cb)</td>
+  <td><span class="zh">取消註冊。你的 process 若直接結束,主機也會自動清除已死亡的回呼,不會洩漏。</span><span class="en">Unregisters the callback. If your process simply dies, the host prunes the dead callback automatically — nothing leaks.</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal tip">
+  <span class="t"><span class="zh">傳同一個實例</span><span class="en">Pass the same instance</span></span>
+  <p class="zh">註冊與取消註冊請使用<strong>同一個</strong> <code>IEquipmentCallback.Stub</code> 實例(主機是以 binder 身分辨識的)。重複註冊同一個實例不會造成重複推播。</p>
+  <p class="en">Register and unregister with the <strong>same</strong> <code>IEquipmentCallback.Stub</code> instance — the host identifies callbacks by binder identity. Registering the same instance twice does not cause duplicate delivery.</p>
+</div>
+</section>
+
+<!-- ======================================================== API CONTROL -->
+<section>
+<h2 id="api-control"><span class="zh">控制方法</span><span class="en">Control methods</span></h2>
+<p class="zh">全部是 fire-and-forget:呼叫立即返回,不回傳執行結果。實際效果請透過遙測與狀態回呼觀察。</p>
+<p class="en">All fire-and-forget: the call returns immediately and reports no result. Observe the actual effect through the telemetry and state callbacks.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">方法</span><span class="en">Method</span></th>
+  <th><span class="zh">適用設備</span><span class="en">Applies to</span></th>
+  <th><span class="zh">說明</span><span class="en">Description</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td class="sig">startWorkout()</td>
+  <td class="nw"><span class="zh">全部</span><span class="en">All</span></td>
+  <td><span class="zh">讓機台進入訓練狀態。爬梯機基於安全考量不會自動起步。<strong>請先讀完<a href="#note-workout">下方說明</a></strong>。</span><span class="en">Puts the machine into its running state. A stairmill will not auto-start, by design. <strong>Read <a href="#note-workout">the note below</a> first.</strong></span></td>
+</tr>
+<tr>
+  <td class="sig">stopWorkout()</td>
+  <td class="nw"><span class="zh">全部</span><span class="en">All</span></td>
+  <td><span class="zh">讓機台停止訓練。<strong>請先讀完<a href="#note-workout">下方說明</a></strong>。</span><span class="en">Stops the workout on the machine. <strong>Read <a href="#note-workout">the note below</a> first.</strong></span></td>
+</tr>
+<tr>
+  <td class="sig">setResistance(int level)</td>
+  <td class="nw">Bike · Row<br><span class="zh">弧形跑步機</span><span class="en">Curved treadmill</span></td>
+  <td><span class="zh">設定阻力等級。一般跑步機沒有阻力控制,指令會被靜默忽略。</span><span class="en">Sets the resistance level. A standard treadmill has no resistance control — the command is silently ignored there.</span></td>
+</tr>
+<tr>
+  <td class="sig">setIncline(int level)</td>
+  <td class="nw">Run</td>
+  <td><span class="zh">設定坡度等級。非跑步機時靜默忽略。</span><span class="en">Sets the incline level. Silently ignored on non-treadmill equipment.</span></td>
+</tr>
+<tr>
+  <td class="sig">setSpeed(double speed)</td>
+  <td class="nw">Run</td>
+  <td><span class="zh">設定速度。弧形跑步機處於阻力模式時不適用。非有限值(<code>NaN</code> / <code>Infinity</code>)會被拒絕。<strong>單位隨主機設定變動,見<a href="#note-unit">單位語意</a></strong>。</span><span class="en">Sets the speed. Not applicable while a curved treadmill is in resistance mode. Non-finite values (<code>NaN</code> / <code>Infinity</code>) are rejected. <strong>The unit follows the console setting — see <a href="#note-unit">unit semantics</a>.</strong></span></td>
+</tr>
+<tr>
+  <td class="sig">setStairmillSpeedLevel(int level)</td>
+  <td class="nw">Stairmill</td>
+  <td><span class="zh">設定爬梯段速等級(1–15)。非爬梯機時靜默忽略。</span><span class="en">Sets the stairmill speed level (1–15). Silently ignored on other equipment.</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal info">
+  <span class="t"><span class="zh">不適用的指令會被靜默忽略,不會拋例外</span><span class="en">Inapplicable commands are silently ignored, never thrown</span></span>
+  <p class="zh">對飛輪呼叫 <code>setIncline()</code> 不會產生任何錯誤,也不會有任何效果。這與 FitOS 主畫面的行為一致。請先讀 <code>EquipmentState.equipmentType</code> 決定要顯示哪些控制項,而不是靠例外來偵測。</p>
+  <p class="en">Calling <code>setIncline()</code> on a bike produces no error and no effect — matching the behaviour of the FitOS console itself. Read <code>EquipmentState.equipmentType</code> to decide which controls to show, rather than relying on exceptions to detect support.</p>
+</div>
+
+<div class="cal info">
+  <span class="t"><span class="zh">超出範圍的數值會被箝制,不會被拒絕</span><span class="en">Out-of-range values are clamped, not rejected</span></span>
+  <p class="zh">送出超過設備上下限的值時,主機會箝制到最接近的合法值後才下達給機台 — 不會拋例外,也不會忽略整個指令。你會在後續的遙測中看到<strong>被箝制後</strong>的實際值。建議送出前就先用 <code>getLimits()</code> 的範圍夾好,讓你的 UI 顯示與實際值一致。</p>
+  <p class="en">A value beyond the equipment's range is clamped to the nearest legal value before it reaches the machine — nothing is thrown and the command is not dropped. Subsequent telemetry will report the <strong>clamped</strong> value. Clamp against <code>getLimits()</code> before sending, so your UI and the machine agree.</p>
+</div>
+</section>
+
+<!-- ========================================================== CALLBACKS -->
+<section>
+<h2 id="callbacks"><span class="zh">回呼介面</span><span class="en">Callbacks</span></h2>
+<p class="zh"><code>IEquipmentCallback</code> 的所有方法都是 <code>oneway</code>,你的處理速度不會拖慢主機。</p>
+<p class="en">Every method on <code>IEquipmentCallback</code> is <code>oneway</code>, so however slowly you handle them, the host is never blocked.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">回呼</span><span class="en">Callback</span></th>
+  <th><span class="zh">觸發時機與頻率</span><span class="en">When it fires</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td class="sig">onEquipmentDataChanged(<br>&nbsp;&nbsp;EquipmentSnapshot snapshot)</td>
+  <td><span class="zh">設備連線且有數據時約<strong>每秒一次</strong>。同一個機台 tick 內所有欄位的變動會<strong>合併成單一次推播</strong>,不會每個欄位各推一次。</span><span class="en">Roughly <strong>once per second</strong> while equipment is connected and reporting. All field changes within one machine tick are <strong>conflated into a single push</strong> — you never get one callback per field.</span></td>
+</tr>
+<tr>
+  <td class="sig">onConnectionStateChanged(<br>&nbsp;&nbsp;EquipmentState state)</td>
+  <td><span class="zh">連線狀態、設備型別、裝置資訊或模式改變時。頻率低。</span><span class="en">Whenever connection status, equipment type, device information or mode changes. Low frequency.</span></td>
+</tr>
+<tr>
+  <td class="sig">onControlStateChanged(<br>&nbsp;&nbsp;int controlState)</td>
+  <td><span class="zh">機台控制狀態改變時:<code>-1</code> init / <code>0</code> stop / <code>1</code> start / <code>2</code> pause。這是<strong>機台實際回報</strong>的狀態,包含使用者直接在機台面板上的操作。</span><span class="en">When the machine's control state changes: <code>-1</code> init, <code>0</code> stop, <code>1</code> start, <code>2</code> pause. This reflects what the machine <strong>actually reports</strong>, including the user pressing buttons on the machine itself.</span></td>
+</tr>
+<tr>
+  <td class="sig">onDeviceListChanged(<br>&nbsp;&nbsp;List&lt;String&gt; discovered,<br>&nbsp;&nbsp;List&lt;String&gt; bound)</td>
+  <td><span class="zh">偵測到的設備清單或已綁定清單改變時。可用於顯示目前偵測到與已綁定的設備。</span><span class="en">When the discovered or bound device list changes. Useful for showing which equipment is currently detected and bound.</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal tip">
+  <span class="t"><span class="zh">用 <code>onControlStateChanged</code> 而不是自己記狀態</span><span class="en">Trust <code>onControlStateChanged</code> over your own bookkeeping</span></span>
+  <p class="zh">使用者可能直接在機台上按停止,或安全鎖被拔起。這些都會反映在 <code>onControlStateChanged</code>,但你自己記的「我剛剛呼叫了 startWorkout」不會知道。請以這個回呼為訓練狀態的唯一真相來源。</p>
+  <p class="en">The user may hit stop on the machine itself, or pull the safety key. Those show up in <code>onControlStateChanged</code>, but not in your own "I just called startWorkout" flag. Treat this callback as the single source of truth for workout state.</p>
+</div>
+</section>
+
+<!-- ============================================================= MATRIX -->
+<section>
+<h2 id="matrix"><span class="zh">設備控制對照表</span><span class="en">Control support matrix</span></h2>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">設備</span><span class="en">Equipment</span></th>
+  <th class="nw">setResistance</th>
+  <th class="nw">setIncline</th>
+  <th class="nw">setSpeed</th>
+  <th class="nw">setStairmillSpeedLevel</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><code>Bike</code></td>
+  <td>✅</td><td>—</td><td>—</td><td>—</td>
+</tr>
+<tr>
+  <td><code>Row</code></td>
+  <td>✅</td><td>—</td><td>—</td><td>—</td>
+</tr>
+<tr>
+  <td><code>Run</code><br><span class="nw" style="font-size:.9em;opacity:.75"><code>runType=NORMAL_Run</code></span></td>
+  <td>—</td><td>✅</td><td>✅</td><td>—</td>
+</tr>
+<tr>
+  <td><code>Run</code><br><span class="nw" style="font-size:.9em;opacity:.75"><code>runType=Curved_Run</code></span></td>
+  <td>✅</td><td>✅</td>
+  <td><span class="zh">僅在非阻力模式</span><span class="en">non-resistance mode only</span></td>
+  <td>—</td>
+</tr>
+<tr>
+  <td><code>Stairmill</code></td>
+  <td>—</td><td>—</td><td>—</td><td>✅</td>
+</tr>
+</tbody>
+</table></div>
+
+<p class="zh">判斷邏輯:先讀 <code>EquipmentState.equipmentType</code>;若為 <code>Run</code>,再讀 <code>runType</code> 區分一般與弧形;弧形跑步機再讀 <code>curvedTrainingMode</code> 判斷 <code>setSpeed</code> 是否可用(等於 <code>resistance</code> 時不可用)。</p>
+<p class="en">Decision path: read <code>EquipmentState.equipmentType</code> first; if it is <code>Run</code>, read <code>runType</code> to tell a standard treadmill from a curved one; for a curved treadmill, read <code>curvedTrainingMode</code> to decide whether <code>setSpeed</code> applies (it does not when the mode is <code>resistance</code>).</p>
+
+<div class="cal info">
+  <span class="t"><span class="zh">弧形跑步機的阻力範圍</span><span class="en">Resistance range on a curved treadmill</span></span>
+  <p class="zh">弧形跑步機的阻力範圍<strong>以機台回報的為準</strong>,並由主機即時反映在 <code>getLimits()</code> 上。讀 <code>EquipmentLimits.curvedResistanceMin</code> / <code>curvedResistanceMax</code> 即可,主機保證這組值與實際生效的箝制範圍一致。</p>
+  <p class="en">A curved treadmill's resistance range is <strong>whatever the machine reports</strong>, and the host reflects it live in <code>getLimits()</code>. Read <code>EquipmentLimits.curvedResistanceMin</code> / <code>curvedResistanceMax</code> — the host guarantees this pair matches the range that is actually enforced.</p>
+</div>
+</section>
+
+<!-- ============================================================== STATE -->
+<section>
+<h2 id="m-state">EquipmentState</h2>
+<p class="zh">連線 / 設備 / 模式狀態的不可變快照。由 <code>getConnectionState()</code> 與 <code>onConnectionStateChanged()</code> 提供。所有 String 欄位<strong>永不為 <code>null</code></strong>,不適用時為空字串 <code>""</code>。</p>
+<p class="en">An immutable snapshot of connection, device and mode state, delivered by <code>getConnectionState()</code> and <code>onConnectionStateChanged()</code>. All String fields are <strong>never <code>null</code></strong> — an inapplicable value is the empty string <code>""</code>.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">欄位</span><span class="en">Field</span></th>
+  <th><span class="zh">型別</span><span class="en">Type</span></th>
+  <th><span class="zh">值 / 說明</span><span class="en">Values / description</span></th>
+</tr></thead>
+<tbody>
+<tr><td class="sig">connectionStatus</td><td class="nw"><code>String</code></td><td><code>disconnected</code> · <code>searching</code> · <code>connecting</code> · <code>connected</code> · <code>cancel connection</code></td></tr>
+<tr><td class="sig">connectionType</td><td class="nw"><code>String</code></td><td><code>NONE</code> · <code>BLE</code> · <code>USB</code> · <code>UART</code></td></tr>
+<tr><td class="sig">equipmentType</td><td class="nw"><code>String</code></td><td><code>Bike</code> · <code>Row</code> · <code>Run</code> · <code>Stairmill</code><span class="zh">(未知為 <code>""</code>)</span><span class="en"> (<code>""</code> when unknown)</span></td></tr>
+<tr><td class="sig">runType</td><td class="nw"><code>String</code></td><td><code>Curved_Run</code> · <code>NORMAL_Run</code><span class="zh">。僅在 <code>equipmentType</code> 為 <code>Run</code> 時有意義。</span><span class="en"> — meaningful only when <code>equipmentType</code> is <code>Run</code>.</span></td></tr>
+<tr><td class="sig">curvedTrainingMode</td><td class="nw"><code>String</code></td><td><code>running</code> · <code>resistance</code> · <code>vibration</code><span class="zh">。僅弧形跑步機。</span><span class="en"> — curved treadmill only.</span></td></tr>
+<tr><td class="sig">deviceName</td><td class="nw"><code>String</code></td><td><span class="zh">已綁定的設備名稱</span><span class="en">Name of the bound device</span></td></tr>
+<tr><td class="sig">modelId</td><td class="nw"><code>int</code></td><td><span class="zh">型號 ID</span><span class="en">Model identifier</span></td></tr>
+<tr><td class="sig">hwVersion</td><td class="nw"><code>String</code></td><td><span class="zh">硬體版本</span><span class="en">Hardware version</span></td></tr>
+<tr><td class="sig">fwVersion</td><td class="nw"><code>String</code></td><td><span class="zh">韌體版本</span><span class="en">Firmware version</span></td></tr>
+<tr><td class="sig">controlState</td><td class="nw"><code>int</code></td><td><code>-1</code> init · <code>0</code> stop · <code>1</code> start · <code>2</code> pause</td></tr>
+<tr><td class="sig">isMetric</td><td class="nw"><code>boolean</code></td><td><span class="zh"><code>true</code> = 公制(km/h),<code>false</code> = 英制(mph)。<strong>影響 <code>setSpeed()</code> 與 snapshot 的數值單位。</strong></span><span class="en"><code>true</code> = metric (km/h), <code>false</code> = imperial (mph). <strong>Affects both <code>setSpeed()</code> and the units in the snapshot.</strong></span></td></tr>
+<tr><td class="sig">isBindDevice</td><td class="nw"><code>boolean</code></td><td><span class="zh">目前是否有已綁定的設備</span><span class="en">Whether a device is currently bound</span></td></tr>
+</tbody>
+</table></div>
+</section>
+
+<!-- =========================================================== SNAPSHOT -->
+<section>
+<h2 id="m-snapshot">EquipmentSnapshot</h2>
+<p class="zh">一筆合併後的即時遙測。所有遙測欄位都是 <code>String</code> — 這是 FitOS 顯示用的字串,<strong>已依主機單位設定換算完成</strong>,小數點一律使用 <code>.</code>(不會出現逗號小數)。不適用於當前設備型別的欄位為空字串 <code>""</code>。</p>
+<p class="en">One conflated tick of live telemetry. Every telemetry field is a <code>String</code> — the display string FitOS itself uses, <strong>already converted to the console's unit setting</strong>, with <code>.</code> as the decimal separator (never a comma). Fields that do not apply to the current equipment type are the empty string <code>""</code>.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">分類</span><span class="en">Group</span></th>
+  <th><span class="zh">欄位</span><span class="en">Fields</span></th>
+  <th><span class="zh">備註</span><span class="en">Notes</span></th>
+</tr></thead>
+<tbody>
+<tr><td class="nw"><span class="zh">時間</span><span class="en">Time</span></td><td><code>timeElapsed</code></td><td><span class="zh">格式化的訓練時長 <code>hh:mm:ss</code></span><span class="en">Formatted duration, <code>hh:mm:ss</code></span></td></tr>
+<tr><td class="nw"><span class="zh">速度</span><span class="en">Speed</span></td><td><code>speed</code> <code>avgSpeed</code> <code>maxSpeed</code></td><td><span class="zh">km/h 或 mph,依 <code>isMetric</code></span><span class="en">km/h or mph, per <code>isMetric</code></span></td></tr>
+<tr><td class="nw"><span class="zh">配速</span><span class="en">Pace</span></td><td><code>pace</code> <code>currentPace</code> <code>avgPace</code></td><td></td></tr>
+<tr><td class="nw"><span class="zh">生理</span><span class="en">Body</span></td><td><code>hr</code></td><td><span class="zh">心率(bpm)</span><span class="en">Heart rate (bpm)</span></td></tr>
+<tr><td class="nw"><span class="zh">累計</span><span class="en">Totals</span></td><td><code>distance</code> <code>calories</code> <code>kj</code></td><td></td></tr>
+<tr><td class="nw"><span class="zh">功率</span><span class="en">Power</span></td><td><code>watt</code> <code>avgWatt</code> <code>bestWatt</code></td><td></td></tr>
+<tr><td class="nw"><span class="zh">阻力</span><span class="en">Resistance</span></td><td><code>resistance</code> <code>avgResistance</code> <code>maxResistance</code></td><td><span class="zh">Bike / Row / 弧形跑步機</span><span class="en">Bike / Row / curved treadmill</span></td></tr>
+<tr><td class="nw"><span class="zh">坡度</span><span class="en">Incline</span></td><td><code>incline</code> <code>avgIncline</code> <code>maxIncline</code></td><td>Run</td></tr>
+<tr><td class="nw"><span class="zh">迴轉</span><span class="en">Cadence</span></td><td><code>rpm</code> <code>avgRpm</code> <code>maxRpm</code></td><td>Bike</td></tr>
+<tr><td class="nw"><span class="zh">步頻</span><span class="en">Stride rate</span></td><td><code>spm</code> <code>avgSpm</code> <code>maxSpm</code></td><td></td></tr>
+<tr><td class="nw"><span class="zh">划船</span><span class="en">Rowing</span></td><td><code>rowSpm</code> <code>maxRowSpm</code> <code>stroke</code> <code>avgStroke</code> <code>maxStroke</code></td><td>Row</td></tr>
+<tr><td class="nw"><span class="zh">爬梯</span><span class="en">Stepping</span></td><td><code>steps</code> <code>avgSteps</code> <code>maxSteps</code> <code>speedLevel</code> <code>avgSpeedLevel</code> <code>maxSpeedLevel</code></td><td>Stairmill</td></tr>
+<tr><td class="nw"><span class="zh">時戳</span><span class="en">Timestamp</span></td><td><code>elapsedRealtimeMillis</code></td><td><span class="zh"><code>long</code>,主機端 <code>SystemClock.elapsedRealtime()</code>。用來判斷資料新鮮度或計算兩筆之間的間隔。</span><span class="en"><code>long</code>, the host's <code>SystemClock.elapsedRealtime()</code>. Use it to judge staleness or measure the gap between ticks.</span></td></tr>
+</tbody>
+</table></div>
+
+<div class="cal tip">
+  <span class="t"><span class="zh">解析數值時請容錯</span><span class="en">Parse defensively</span></span>
+  <p class="zh">欄位是顯示字串,可能是 <code>""</code>(不適用)。轉數字時請用容錯寫法,例如 Kotlin 的 <code>toDoubleOrNull()</code> 或 Java 的 try/catch,不要假設一定能轉成功。</p>
+  <p class="en">These are display strings and may be <code>""</code> (not applicable). Convert defensively — Kotlin's <code>toDoubleOrNull()</code>, or a try/catch in Java — rather than assuming the parse succeeds.</p>
+</div>
+</section>
+
+<!-- ============================================================= LIMITS -->
+<section>
+<h2 id="m-limits">EquipmentLimits</h2>
+<p class="zh">連線設備回報的控制範圍(機台尚未回報時為 FitOS 預設值)。用來畫滑桿、做輸入驗證。</p>
+<p class="en">The control ranges reported by the connected equipment — or FitOS defaults before the machine has reported. Use them to build sliders and validate input.</p>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">欄位</span><span class="en">Field</span></th>
+  <th><span class="zh">型別</span><span class="en">Type</span></th>
+  <th><span class="zh">說明</span><span class="en">Description</span></th>
+</tr></thead>
+<tbody>
+<tr><td class="sig">bikeResistanceMin / Max</td><td class="nw"><code>int</code></td><td><span class="zh">飛輪阻力範圍</span><span class="en">Bike resistance range</span></td></tr>
+<tr><td class="sig">rowResistanceMin / Max</td><td class="nw"><code>int</code></td><td><span class="zh">划船機阻力範圍</span><span class="en">Rower resistance range</span></td></tr>
+<tr><td class="sig">curvedResistanceMin / Max</td><td class="nw"><code>int</code></td><td><span class="zh">弧形跑步機阻力範圍</span><span class="en">Curved treadmill resistance range</span></td></tr>
+<tr><td class="sig">runInclineMin / Max</td><td class="nw"><code>int</code></td><td><span class="zh">跑步機坡度範圍</span><span class="en">Treadmill incline range</span></td></tr>
+<tr><td class="sig">runSpeedMinKmh / MaxKmh</td><td class="nw"><code>double</code></td><td><span class="zh"><strong>一律 km/h</strong>,與主機單位設定無關。<a href="#note-unit">見單位語意</a>。</span><span class="en"><strong>Always km/h</strong>, regardless of the console unit setting. <a href="#note-unit">See unit semantics</a>.</span></td></tr>
+<tr><td class="sig">stairmillSpeedLevelMin / Max</td><td class="nw"><code>int</code></td><td><span class="zh">爬梯段速範圍(1–15)</span><span class="en">Stairmill speed level range (1–15)</span></td></tr>
+</tbody>
+</table></div>
+</section>
+
+<!-- =========================================================== CONTRACT -->
+<section>
+<h2 id="m-contract">EquipmentSdkContract</h2>
+<p class="zh">所有常數集中在這個類別。<strong>請一律使用常數而非字面字串</strong>,以免拼字錯誤。</p>
+<p class="en">Every constant lives in this class. <strong>Always use the constants rather than string literals</strong> — it removes a whole class of typos.</p>
+
+<figure class="code">
+  <figcaption>EquipmentSdkContract<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="c">// --- binding -----------------------------------------------------------</span>
+API_VERSION                 = <span class="n">1</span>
+HOST_PACKAGE                = <span class="s">"com.ucare.fitos"</span>
+ACTION_BIND                 = <span class="s">"com.ucare.fitos.action.EQUIPMENT_SERVICE"</span>
+PERMISSION                  = <span class="s">"com.ucare.fitos.permission.EQUIPMENT_SERVICE"</span>
+
+<span class="c">// --- controlState ------------------------------------------------------</span>
+CONTROL_STATE_INIT          = <span class="n">-1</span>
+CONTROL_STATE_STOP          = <span class="n">0</span>
+CONTROL_STATE_START         = <span class="n">1</span>
+CONTROL_STATE_PAUSE         = <span class="n">2</span>
+
+<span class="c">// --- equipmentType -----------------------------------------------------</span>
+TYPE_BIKE                   = <span class="s">"Bike"</span>
+TYPE_ROW                    = <span class="s">"Row"</span>
+TYPE_RUN                    = <span class="s">"Run"</span>
+TYPE_STAIRMILL              = <span class="s">"Stairmill"</span>
+
+<span class="c">// --- runType (only when equipmentType == TYPE_RUN) ---------------------</span>
+RUN_TYPE_CURVED             = <span class="s">"Curved_Run"</span>
+RUN_TYPE_NORMAL             = <span class="s">"NORMAL_Run"</span>
+
+<span class="c">// --- connectionStatus --------------------------------------------------</span>
+STATUS_DISCONNECTED         = <span class="s">"disconnected"</span>
+STATUS_SEARCHING            = <span class="s">"searching"</span>
+STATUS_CONNECTING           = <span class="s">"connecting"</span>
+STATUS_CONNECTED            = <span class="s">"connected"</span>
+STATUS_CANCEL_CONNECTION    = <span class="s">"cancel connection"</span>
+
+<span class="c">// --- connectionType ----------------------------------------------------</span>
+CONNECTION_NONE             = <span class="s">"NONE"</span>
+CONNECTION_BLE              = <span class="s">"BLE"</span>
+CONNECTION_USB              = <span class="s">"USB"</span>
+CONNECTION_UART             = <span class="s">"UART"</span>
+
+<span class="c">// --- curvedTrainingMode (curved treadmill only) ------------------------</span>
+CURVED_MODE_RUNNING         = <span class="s">"running"</span>
+CURVED_MODE_RESISTANCE      = <span class="s">"resistance"</span>
+CURVED_MODE_VIBRATION       = <span class="s">"vibration"</span></code></pre>
+</figure>
+</section>
+
+<!-- ============================================================== NOTES -->
+<section>
+<h2 id="notes"><span class="zh">重要注意事項</span><span class="en">Important notes</span></h2>
+<p class="zh">這一節的四點是整合時最容易出錯的地方,請務必讀完。</p>
+<p class="en">The four points in this section are where integrations most often go wrong. Please read all of them.</p>
+
+<h3 id="note-unit"><span class="zh">1. 單位語意 — 送出值與範圍值的單位不同</span><span class="en">1. Unit semantics — the value you send and the range you read use different units</span></h3>
+
+<div class="cal warn">
+  <span class="t"><span class="zh">這是 v1 最容易踩的坑</span><span class="en">This is the easiest mistake to make in v1</span></span>
+  <div class="zh">
+    <ul class="ul">
+      <li><code>setSpeed(double)</code> 的單位<strong>跟隨主機單位設定</strong>:<code>EquipmentState.isMetric</code> 為 <code>true</code> 時是 <strong>km/h</strong>,<code>false</code> 時是 <strong>mph</strong>。</li>
+      <li><code>EquipmentLimits.runSpeedMinKmh</code> / <code>runSpeedMaxKmh</code> <strong>一律是 km/h</strong>,與單位設定無關。</li>
+      <li><code>EquipmentSnapshot.speed</code> 等顯示字串<strong>已依主機單位換算</strong>,與 <code>setSpeed</code> 同單位。</li>
+    </ul>
+    <p>因此在英制模式下,<strong>不能</strong>直接拿 <code>runSpeedMaxKmh</code> 去夾 <code>setSpeed</code> 的參數 — 必須先換算。</p>
+  </div>
+  <div class="en">
+    <ul class="ul">
+      <li><code>setSpeed(double)</code> takes its unit from <strong>the console setting</strong>: <strong>km/h</strong> when <code>EquipmentState.isMetric</code> is <code>true</code>, <strong>mph</strong> when it is <code>false</code>.</li>
+      <li><code>EquipmentLimits.runSpeedMinKmh</code> / <code>runSpeedMaxKmh</code> are <strong>always km/h</strong>, independent of that setting.</li>
+      <li><code>EquipmentSnapshot.speed</code> and friends are <strong>already converted to the console unit</strong> — same unit as <code>setSpeed</code>.</li>
+    </ul>
+    <p>So in imperial mode you <strong>cannot</strong> clamp a <code>setSpeed</code> argument directly against <code>runSpeedMaxKmh</code> — convert first.</p>
+  </div>
+</div>
+
+<figure class="code">
+  <figcaption><span class="zh">正確做法</span><span class="en">The correct pattern</span> — Kotlin<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">private fun</span> requestSpeed(targetInDisplayUnit: <span class="k">Double</span>) {
+    <span class="k">val</span> state  = client.connectionState ?: <span class="k">return</span>
+    <span class="k">val</span> limits = cachedLimits ?: <span class="k">return</span>
+
+    <span class="c">// 1. Normalise the user's value to km/h.</span>
+    <span class="k">val</span> kmh = <span class="k">if</span> (state.isMetric) targetInDisplayUnit
+              <span class="k">else</span>             targetInDisplayUnit * <span class="n">1.60934</span>
+
+    <span class="c">// 2. Clamp in km/h, because the limits are in km/h.</span>
+    <span class="k">val</span> clamped = kmh.coerceIn(limits.runSpeedMinKmh, limits.runSpeedMaxKmh)
+
+    <span class="c">// 3. Convert back to the console unit before sending.</span>
+    client.setSpeed(<span class="k">if</span> (state.isMetric) clamped <span class="k">else</span> clamped / <span class="n">1.60934</span>)
+}</code></pre>
+</figure>
+
+<h3 id="note-workout"><span class="zh">2. 使用 <code>startWorkout()</code> / <code>stopWorkout()</code> 的注意事項</span><span class="en">2. Using <code>startWorkout()</code> / <code>stopWorkout()</code></span></h3>
+
+<div class="cal warn">
+  <span class="t"><span class="zh">使用這兩個方法前請先了解</span><span class="en">Before you use these two</span></span>
+  <div class="zh">
+    <p>這兩個指令的作用對象是<strong>機台本身</strong>。使用時請留意:</p>
+    <ul class="ul">
+      <li>運動資料的保存請視為<strong>你的 App 的責任</strong>。不要假設主機端會為你記錄或上傳這段訓練。</li>
+      <li>指令<strong>不保證一定生效</strong>。當主機端本身已有進行中的訓練流程時,為避免雙方對「訓練是否進行中」認知不一致,主機可能不會執行你送出的啟停指令。</li>
+      <li>請以 <code>onControlStateChanged</code> 回報的狀態作為判斷依據,不要在送出指令後就假設狀態已改變。</li>
+    </ul>
+    <p>適用情境:你的 App 位於前景、且是這次訓練的主要控制者。啟動前先檢查 <code>controlState</code>,若已是 <code>CONTROL_STATE_START</code> 代表訓練已在進行中,不需再送啟動指令。</p>
+  </div>
+  <div class="en">
+    <p>These two commands act on <strong>the machine itself</strong>. Keep in mind:</p>
+    <ul class="ul">
+      <li>Treat persisting the session data as <strong>your app's responsibility</strong>. Do not assume the host will record or upload the workout for you.</li>
+      <li>A command is <strong>not guaranteed to take effect</strong>. When the host already has a workout flow of its own in progress, it may decline to act on your start/stop command, so that the two sides do not end up disagreeing about whether a workout is running.</li>
+      <li>Use the state reported by <code>onControlStateChanged</code> as your source of truth — never assume the state changed just because you sent a command.</li>
+    </ul>
+    <p>Intended usage: your app is in the foreground and is the primary controller of this session. Before starting, check <code>controlState</code> — if it is already <code>CONTROL_STATE_START</code> a workout is in progress, so there is no need to start again.</p>
+  </div>
+</div>
+
+<h3><span class="zh">3. 指令是非同步且不回報結果</span><span class="en">3. Commands are asynchronous and report no result</span></h3>
+<p class="zh">所有控制方法呼叫後立即返回,不代表機台已經執行。實際結果請一律透過回呼觀察:<code>onControlStateChanged</code> 確認訓練啟停,<code>onEquipmentDataChanged</code> 確認速度 / 坡度 / 阻力已生效。不要在送出指令後立刻假設狀態已改變。</p>
+<p class="en">Every control method returns immediately; that return says nothing about whether the machine acted. Always confirm through callbacks: <code>onControlStateChanged</code> for start/stop, and <code>onEquipmentDataChanged</code> for speed, incline and resistance taking effect. Never assume the state changed just because the call returned.</p>
+
+<h3><span class="zh">4. 設備狀態可能由你以外的來源改變</span><span class="en">4. Equipment state can change from outside your app</span></h3>
+<p class="zh">你的 App 不是唯一能影響機台的角色 — 使用者可以直接在機台面板上操作,主機端本身也可能送出控制指令。因此你設定的數值有可能在稍後的遙測中變成別的值,<strong>後送出的指令會蓋掉先前的</strong>。請一律以回呼回報的值來更新 UI,不要把「我剛送出的值」當作顯示來源。</p>
+<p class="en">Your app is not the only thing that can affect the machine — the user can operate the console directly, and the host may issue control commands of its own. A value you set may therefore show up as something else in later telemetry, since <strong>a later command overrides an earlier one</strong>. Always drive your UI from the values reported in callbacks, not from the last value you sent.</p>
+</section>
+
+<!-- ========================================================== LIFECYCLE -->
+<section>
+<h2 id="lifecycle"><span class="zh">生命週期與重連</span><span class="en">Lifecycle &amp; reconnect</span></h2>
+
+<h3><span class="zh">建議的綁定時機</span><span class="en">When to bind</span></h3>
+<p class="zh">在 <code>onStart()</code> 呼叫 <code>connect()</code>、<code>onStop()</code> 呼叫 <code>disconnect()</code>。這樣 App 進入背景時不會佔用主機資源,回到前景時 <code>registerCallback</code> 的補推機制會立刻把你帶回最新狀態。</p>
+<p class="en">Call <code>connect()</code> in <code>onStart()</code> and <code>disconnect()</code> in <code>onStop()</code>. Your app then holds no host resources while backgrounded, and on return the replay behaviour of <code>registerCallback</code> brings you straight back to current state.</p>
+
+<h3><span class="zh"><code>EquipmentServiceClient</code> 的自動處理</span><span class="en">What <code>EquipmentServiceClient</code> handles for you</span></h3>
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">情況</span><span class="en">Situation</span></th>
+  <th><span class="zh">helper 的行為</span><span class="en">Helper behaviour</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><span class="zh">主機 process 暫時死亡</span><span class="en">Host process dies temporarily</span></td>
+  <td><span class="zh">觸發 <code>onServiceDisconnected()</code>;系統會自動重啟主機並重新連上,回呼會自動重新註冊。</span><span class="en">Fires <code>onServiceDisconnected()</code>; the system restarts the host and reconnects, and the callback is re-registered automatically.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">主機 App 被更新</span><span class="en">Host app is updated</span></td>
+  <td><span class="zh">綁定失效,helper 會自動解綁並在數秒後重試。</span><span class="en">The binding dies; the helper unbinds and retries a few seconds later.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">回呼執行緒</span><span class="en">Callback threading</span></td>
+  <td><span class="zh">所有 <code>Callback</code> 方法都已轉到你的主執行緒,可直接更新 UI。</span><span class="en">Every <code>Callback</code> method is delivered on your main thread — safe to touch views directly.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">未綁定時送指令</span><span class="en">Command while unbound</span></td>
+  <td><span class="zh">指令被丟棄並寫入 log,不會拋例外。查詢方法回傳 <code>null</code>(<code>getApiVersion()</code> 回 <code>-1</code>)。</span><span class="en">The command is dropped with a log line rather than throwing. Query methods return <code>null</code> (<code>getApiVersion()</code> returns <code>-1</code>).</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal tip">
+  <span class="t"><span class="zh">用 <code>isConnected()</code> 控制 UI 可用性</span><span class="en">Gate your UI on <code>isConnected()</code></span></span>
+  <p class="zh">因為未綁定時指令會被靜默丟棄,使用者按下按鈕可能什麼都不會發生。建議在 <code>onServiceConnected()</code> / <code>onServiceDisconnected()</code> 中切換控制項的 enabled 狀態,讓使用者知道目前能不能操作。</p>
+  <p class="en">Because commands are dropped silently while unbound, a button press can appear to do nothing. Toggle your controls' enabled state in <code>onServiceConnected()</code> / <code>onServiceDisconnected()</code> so the user can see whether the machine is reachable.</p>
+</div>
+</section>
+
+<!-- ====================================================== TROUBLESHOOT -->
+<section>
+<h2 id="troubleshoot"><span class="zh">疑難排解</span><span class="en">Troubleshooting</span></h2>
+
+<div class="tw"><table>
+<thead><tr>
+  <th><span class="zh">現象</span><span class="en">Symptom</span></th>
+  <th><span class="zh">原因與處置</span><span class="en">Cause and fix</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><span class="zh"><code>bindService()</code> 回傳 <code>false</code>,沒有任何例外</span><span class="en"><code>bindService()</code> returns <code>false</code> with no exception</span></td>
+  <td><span class="zh">99% 是 manifest 少了 <code>&lt;queries&gt;&lt;package android:name="com.ucare.fitos"/&gt;&lt;/queries&gt;</code>(targetSdk ≥ 30 時必要)。其次是機台上沒安裝 FitOS。注意:即使回傳 <code>false</code>,你<strong>仍然要</strong>呼叫 <code>unbindService()</code> 清掉這次註冊。</span><span class="en">99% of the time the manifest is missing <code>&lt;queries&gt;&lt;package android:name="com.ucare.fitos"/&gt;&lt;/queries&gt;</code> (mandatory at targetSdk 30+). Otherwise FitOS is not installed. Note: even on <code>false</code> you <strong>must still</strong> call <code>unbindService()</code> to release the registration.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">綁定時拋 <code>SecurityException</code></span><span class="en"><code>SecurityException</code> when binding</span></td>
+  <td><span class="zh">manifest 少了 <code>&lt;uses-permission android:name="com.ucare.fitos.permission.EQUIPMENT_SERVICE"/&gt;</code>,或你的 App 早於 FitOS 安裝(權限尚未被定義)。後者請重裝你的 App。</span><span class="en">The manifest is missing <code>&lt;uses-permission android:name="com.ucare.fitos.permission.EQUIPMENT_SERVICE"/&gt;</code>, or your app was installed before FitOS so the permission did not yet exist. For the latter, reinstall your app.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">收到 null binding(<code>onNullBinding</code>)</span><span class="en">Null binding (<code>onNullBinding</code>)</span></td>
+  <td><span class="zh">這台機器的主機版本未啟用設備介面。請聯繫 FitOS 團隊確認機台軟體版本。使用 helper 時,這個情況只會出現在 logcat,你的 <code>Callback</code> 不會收到通知 — 若你要在 UI 上呈現,請改用手動綁定並實作 <code>onNullBinding</code>。</span><span class="en">The host build on this unit does not have the equipment interface enabled — contact the FitOS team to confirm the unit's software version. When using the helper this appears only in logcat and your <code>Callback</code> is not notified; if you need to surface it in the UI, bind manually and implement <code>onNullBinding</code>.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">回呼中更新 UI 崩潰</span><span class="en">Crash when updating the UI from a callback</span></td>
+  <td><span class="zh">手動綁定的回呼在 binder 執行緒抵達。請 post 回主執行緒,或改用 <code>EquipmentServiceClient</code>。</span><span class="en">Manual bindings deliver callbacks on a binder thread. Post to the main thread, or switch to <code>EquipmentServiceClient</code>.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">收不到 <code>onEquipmentDataChanged</code></span><span class="en">No <code>onEquipmentDataChanged</code> arriving</span></td>
+  <td><span class="zh">先檢查 <code>EquipmentState.connectionStatus</code> 是否為 <code>connected</code>。未連上設備時沒有遙測可推。另外確認 <code>registerCallback</code> 有成功呼叫,且傳入的 Stub 實例沒有被 GC 回收 — 請用欄位持有它,不要用區域變數。</span><span class="en">First check that <code>EquipmentState.connectionStatus</code> is <code>connected</code> — with no equipment attached there is nothing to push. Then confirm <code>registerCallback</code> actually succeeded and that your Stub instance has not been garbage collected: hold it in a field, never a local.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">送出的控制值沒生效或被改掉</span><span class="en">A control value does not take, or changes back</span></td>
+  <td><span class="zh">三個可能:(1) 該指令不適用於當前設備型別,<a href="#matrix">見對照表</a>;(2) 值超出範圍被箝制;(3) 稍後有其他來源的指令覆蓋了它。檢查 <code>equipmentType</code> 與 <code>getLimits()</code>,並以遙測回報的值為準。</span><span class="en">Three possibilities: (1) the command does not apply to the current equipment type — <a href="#matrix">see the matrix</a>; (2) the value was out of range and got clamped; (3) a later command from another source overrode it. Check <code>equipmentType</code> and <code>getLimits()</code>, and trust the value reported in telemetry.</span></td>
+</tr>
+<tr>
+  <td><span class="zh">數值出現逗號小數點</span><span class="en">Decimal commas in the numbers</span></td>
+  <td><span class="zh">主機已將所有遙測字串正規化為 <code>.</code>,所以逗號不會來自 API 這一側。若畫面上出現逗號,通常是你端的數字格式化或 locale 設定造成的,可以從那裡著手檢查。</span><span class="en">The host normalises every telemetry string to <code>.</code>, so a comma will not have come from the API side. If one shows up in your UI, it is usually your own number formatting or locale settings — that is the place to look first.</span></td>
+</tr>
+</tbody>
+</table></div>
+</section>
+
+<!-- ============================================================= COMPAT -->
+<section>
+<h2 id="compat"><span class="zh">版本相容性</span><span class="en">Versioning</span></h2>
+
+<p class="zh">這份契約以<strong>向後相容</strong>為設計目標:新功能會以追加的方式加入介面尾端,既有方法的簽章與順序會盡量維持穩定,讓既有整合在主機更新後能持續運作。</p>
+<p class="en">This contract is designed for <strong>backward compatibility</strong>: new capabilities are added by appending to the end of the interface, and the signatures and order of existing methods are kept as stable as we can, so an existing integration keeps working across host updates.</p>
+
+<p class="zh">請務必用 <code>getApiVersion()</code> 做功能偵測,不要假設主機一定支援你編譯時的所有功能 — 機台在現場的軟體版本不一定與你手上的 SDK 同步。</p>
+<p class="en">Always feature-detect with <code>getApiVersion()</code> rather than assuming the host supports everything you compiled against — the software version on a unit in the field will not necessarily match the SDK you are holding.</p>
+
+<figure class="code">
+  <figcaption><span class="zh">功能偵測</span><span class="en">Feature detection</span> — Kotlin<span class="sp"></span><button type="button" class="copy">Copy</button></figcaption>
+<pre><code><span class="k">override fun</span> onServiceConnected() {
+    <span class="k">val</span> version = client.apiVersion
+    <span class="k">if</span> (version &lt; <span class="n">1</span>) {
+        <span class="c">// -1 means "not bound"; anything below the version you need</span>
+        <span class="c">// should disable the corresponding part of your UI.</span>
+        showUnsupportedHost()
+        <span class="k">return</span>
+    }
+    enableControls()
+}</code></pre>
+</figure>
+
+<div class="tw"><table>
+<thead><tr>
+  <th class="nw"><span class="zh">版本</span><span class="en">Version</span></th>
+  <th><span class="zh">內容</span><span class="en">Contents</span></th>
+</tr></thead>
+<tbody>
+<tr>
+  <td class="nw"><strong>1</strong></td>
+  <td><span class="zh">查詢(4)、事件註冊(2)、訓練啟停(2)、設備控制(4);回呼 4 個。即本文件的全部內容。</span><span class="en">Queries (4), event registration (2), workout start/stop (2), equipment control (4); four callbacks. Everything in this document.</span></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="cal info">
+  <span class="t"><span class="zh">需要本文件以外的能力?</span><span class="en">Need something this document does not cover?</span></span>
+  <p class="zh">若你的整合情境需要目前尚未提供的功能,請與 FitOS 團隊聯繫討論。</p>
+  <p class="en">If your integration needs a capability that is not offered here, get in touch with the FitOS team to discuss it.</p>
+</div>
+</section>
+
+<footer>
+  <p class="zh">FitOS Equipment SDK · API v1 · 本文件涵蓋 v1 全部公開介面。有疑問請聯繫 FitOS 團隊。</p>
+  <p class="en">FitOS Equipment SDK · API v1 · This document covers the complete public surface of v1. Questions go to the FitOS team.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var root = document.documentElement;
+
+  /* ---------------------------------------------------------- language */
+  var bZh = document.getElementById('btn-zh');
+  var bEn = document.getElementById('btn-en');
+
+  function setLang(lang) {
+    root.setAttribute('data-lang', lang);
+    root.setAttribute('lang', lang === 'zh' ? 'zh-Hant' : 'en');
+    bZh.setAttribute('aria-pressed', String(lang === 'zh'));
+    bEn.setAttribute('aria-pressed', String(lang === 'en'));
+    try { localStorage.setItem('fitos-sdk-lang', lang); } catch (e) {}
+  }
+  bZh.addEventListener('click', function () { setLang('zh'); });
+  bEn.addEventListener('click', function () { setLang('en'); });
+
+  var savedLang = null;
+  try { savedLang = localStorage.getItem('fitos-sdk-lang'); } catch (e) {}
+  if (savedLang === 'zh' || savedLang === 'en') {
+    setLang(savedLang);
+  } else if ((navigator.language || '').toLowerCase().indexOf('zh') !== 0) {
+    setLang('en');
+  }
+
+  /* ------------------------------------------------------------- theme */
+  var themeBtn = document.getElementById('theme');
+  var savedTheme = null;
+  try { savedTheme = localStorage.getItem('fitos-sdk-theme'); } catch (e) {}
+  if (savedTheme === 'dark' || savedTheme === 'light') {
+    root.setAttribute('data-theme', savedTheme);
+  }
+  themeBtn.addEventListener('click', function () {
+    var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var cur = root.getAttribute('data-theme') || (dark ? 'dark' : 'light');
+    var next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('fitos-sdk-theme', next); } catch (e) {}
+  });
+
+  /* -------------------------------------------------------------- copy */
+  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (btn) {
+    btn.addEventListener('click', function () {
+      var code = btn.closest('figure').querySelector('pre').innerText;
+      var done = function () {
+        var was = btn.textContent;
+        btn.textContent = 'Copied';
+        btn.classList.add('ok');
+        setTimeout(function () { btn.textContent = was; btn.classList.remove('ok'); }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done, fallback);
+      } else {
+        fallback();
+      }
+      function fallback() {
+        var ta = document.createElement('textarea');
+        ta.value = code;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+
+  /* --------------------------------------------------------- toc mobile */
+  var toc = document.getElementById('toc');
+  document.getElementById('toc-toggle').addEventListener('click', function () {
+    var open = toc.classList.toggle('open');
+    this.setAttribute('aria-expanded', String(open));
+  });
+  Array.prototype.forEach.call(toc.querySelectorAll('a'), function (a) {
+    a.addEventListener('click', function () {
+      if (window.innerWidth <= 960) {
+        toc.classList.remove('open');
+        document.getElementById('toc-toggle').setAttribute('aria-expanded', 'false');
+      }
+    });
+  });
+
+  /* ------------------------------------------------------- toc scrollspy */
+  var links = {};
+  Array.prototype.forEach.call(toc.querySelectorAll('a[href^="#"]'), function (a) {
+    links[a.getAttribute('href').slice(1)] = a;
+  });
+  var targets = Object.keys(links)
+    .map(function (id) { return document.getElementById(id); })
+    .filter(Boolean);
+
+  var active = null;
+  function spy() {
+    var best = null;
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i].getBoundingClientRect().top <= 120) best = targets[i];
+    }
+    if (!best || best === active) return;
+    if (active && links[active.id]) links[active.id].classList.remove('on');
+    active = best;
+    if (links[active.id]) links[active.id].classList.add('on');
+  }
+  var ticking = false;
+  window.addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    window.requestAnimationFrame(function () { spy(); ticking = false; });
+  }, { passive: true });
+  spy();
+})();
+</script>
+</body>
+</html>
