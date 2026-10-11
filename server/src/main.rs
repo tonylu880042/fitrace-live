@@ -11,7 +11,8 @@ use axum::{
 };
 use fitrace_live::*;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -22,6 +23,11 @@ use tokio::sync::broadcast;
 
 const BROADCAST_INTERVAL_MS: u64 = 400; // 2.5Hz（§3.4）
 const COUNTDOWN_MS: i64 = 5000; // §3.2
+/// 未指定時的人數上限：一排跑步機、大螢幕一頁放得下。
+/// 榜單廣播的流量是人數平方，房間必須有上限。
+const DEFAULT_CAPACITY: u32 = 10;
+/// 重啟後先不結算的時間，讓選手端重連回報斷線期間的進度（選手端重連退避上限 10 秒）。
+const RESUME_GRACE_MS: i64 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -36,18 +42,24 @@ struct TokenInfo {
     role: Role,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Room {
     title: String,
+    #[serde(skip, default = "room_channel")]
     tx: broadcast::Sender<String>,
     runners: HashMap<String, RunnerState>,
     start_at_ms: Option<i64>,
     race_distance_m: f64,
-    capacity: Option<u32>,
+    capacity: u32,
     cutoff_ms: i64,
     closed_at_ms: Option<i64>,
     auto_start_at_ms: Option<i64>,
     rule_id: Option<String>,
     finish_countdown_cutoff_ms: Option<i64>,
+}
+
+fn room_channel() -> broadcast::Sender<String> {
+    broadcast::channel(64).0
 }
 
 impl Room {
@@ -79,25 +91,172 @@ impl Room {
     }
 }
 
-#[derive(Default)]
 struct AppState {
     // ponytail: 單一全域鎖，本機單場館夠用；同時開大量房間有鎖競爭時再改 per-room 鎖
+    // 鎖的順序：rule_counter → rules → room_counter → rooms → tokens / db
     rooms: Mutex<HashMap<String, Room>>,
     tokens: Mutex<HashMap<String, TokenInfo>>,
     room_counter: Mutex<u32>,
     rules: Mutex<HashMap<String, Rule>>,
     rule_counter: Mutex<u32>,
     admin_key: String,
+    // ponytail: 同步 SQLite 直接在 async 裡呼叫；只有結算與每秒快照會寫，量大時再移到 spawn_blocking
+    db: Mutex<Connection>,
+    /// 這個時刻之前不做結算（見 RESUME_GRACE_MS）
+    settle_from_ms: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Rule {
     title: String,
     distance_m: f64,
-    capacity: Option<u32>,
+    capacity: u32,
     cutoff_minutes: u32,
     min_runners: u32,
     wait_seconds: u32,
+}
+
+/// 重啟時要還原的全部狀態。Token 不存：選手端與看板每次重連都會重新申請。
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Snapshot {
+    rooms: HashMap<String, Room>,
+    rules: HashMap<String, Rule>,
+    room_counter: u32,
+    rule_counter: u32,
+}
+
+fn open_db(path: &str) -> rusqlite::Result<Connection> {
+    let db = Connection::open(path)?;
+    db.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS races (
+             id INTEGER PRIMARY KEY, room_id TEXT NOT NULL, title TEXT NOT NULL, distance_m REAL NOT NULL,
+             started_at INTEGER NOT NULL, closed_at INTEGER NOT NULL, reason TEXT NOT NULL,
+             UNIQUE (room_id, started_at));
+         -- duration_ms 為 NULL 即 DNF
+         CREATE TABLE IF NOT EXISTS results (
+             race_id INTEGER NOT NULL REFERENCES races (id), rank INTEGER NOT NULL, runner_id TEXT NOT NULL,
+             name TEXT NOT NULL, country TEXT, duration_ms INTEGER, distance_m REAL NOT NULL);",
+    )?;
+    Ok(db)
+}
+
+fn load_snapshot(db: &Connection) -> Snapshot {
+    let Ok(json) = db.query_row("SELECT json FROM state WHERE id = 1", [], |r| r.get::<_, String>(0)) else {
+        return Snapshot::default();
+    };
+    serde_json::from_str(&json).unwrap_or_else(|e| {
+        // 升級後欄位對不上就從空的開始，成績表不受影響
+        eprintln!("狀態快照無法還原，從空白狀態啟動：{e}");
+        Snapshot::default()
+    })
+}
+
+/// 把低頻狀態（房間、報名、規則、流水號）存成一份快照，內容沒變就不寫。
+// ponytail: 每秒整份序列化；房間上千時改成事件式增量寫入
+fn persist(st: &AppState, last: &mut String) {
+    let json = {
+        let rule_counter = st.rule_counter.lock().unwrap();
+        let rules = st.rules.lock().unwrap();
+        let room_counter = st.room_counter.lock().unwrap();
+        let rooms = st.rooms.lock().unwrap();
+        json!({ "rooms": &*rooms, "rules": &*rules, "room_counter": *room_counter, "rule_counter": *rule_counter })
+            .to_string()
+    };
+    if json == *last {
+        return;
+    }
+    let written = st.db.lock().unwrap().execute(
+        "INSERT INTO state (id, json) VALUES (1, ?1) ON CONFLICT (id) DO UPDATE SET json = excluded.json",
+        [&json],
+    );
+    match written {
+        Ok(_) => *last = json,
+        Err(e) => eprintln!("狀態快照寫入失敗：{e}"),
+    }
+}
+
+/// 結算時把成績落盤。同一場（房號 + 起跑時刻）只寫一次：重啟後重複結算不會多出第二份。
+fn save_results(db: &mut Connection, room_id: &str, room: &Room, closed_at: i64, reason: &str) -> rusqlite::Result<()> {
+    let Some(start_at) = room.start_at_ms else {
+        return Ok(());
+    };
+    let tx = db.transaction()?;
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO races (room_id, title, distance_m, started_at, closed_at, reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![room_id, room.title, room.race_distance_m, start_at, closed_at, reason],
+    )?;
+    if inserted == 1 {
+        let race_id = tx.last_insert_rowid();
+        let runners: Vec<RunnerState> = room.runners.values().cloned().collect();
+        for e in rank(&runners, room.race_distance_m, true) {
+            tx.execute(
+                "INSERT INTO results (race_id, rank, runner_id, name, country, duration_ms, distance_m)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![race_id, e.rank, e.runner_id, e.name, e.country, e.finish_time_ms.map(|f| f - start_at), e.distance],
+            )?;
+        }
+    }
+    tx.commit()
+}
+
+/// 結算：標記關閉、通知房內所有人、成績落盤。
+fn close_room(st: &AppState, room_id: &str, room: &mut Room, now: i64, reason: &str) {
+    room.closed_at_ms = Some(now);
+    let _ = room.tx.send(
+        serde_json::to_string(&ServerMsg::RaceClosed {
+            room_id: room_id.to_string(),
+            closed_at_server_time: now,
+            reason: reason.to_string(),
+        })
+        .unwrap(),
+    );
+    // 寫入失敗不擋結算：選手端與大螢幕照常收場
+    if let Err(e) = save_results(&mut st.db.lock().unwrap(), room_id, room, now, reason) {
+        eprintln!("成績寫入失敗 {room_id}：{e}");
+    }
+}
+
+/// 每個距離取前幾名
+const BEST_PER_DISTANCE: usize = 10;
+
+/// `since` 之後各距離的最佳成績，每位選手只取最快的一次。
+fn best_since(db: &Connection, since_ms: i64) -> rusqlite::Result<Value> {
+    let mut stmt = db.prepare(
+        "SELECT r.distance_m, s.runner_id, s.name, s.country, MIN(s.duration_ms) AS best
+         FROM results s JOIN races r ON r.id = s.race_id
+         WHERE s.duration_ms IS NOT NULL AND r.closed_at >= ?1
+         GROUP BY r.distance_m, s.runner_id
+         ORDER BY r.distance_m, best",
+    )?;
+    let rows = stmt.query_map([since_ms], |r| {
+        Ok((r.get::<_, f64>(0)?, json!({
+            "runnerId": r.get::<_, String>(1)?,
+            "name": r.get::<_, String>(2)?,
+            "country": r.get::<_, Option<String>>(3)?,
+            "durationMs": r.get::<_, i64>(4)?,
+        })))
+    })?;
+    let mut distances: Vec<(f64, Vec<Value>)> = Vec::new();
+    for row in rows {
+        let (distance_m, entry) = row?;
+        if distances.last().is_none_or(|(d, _)| *d != distance_m) {
+            distances.push((distance_m, Vec::new()));
+        }
+        let best = &mut distances.last_mut().unwrap().1;
+        if best.len() < BEST_PER_DISTANCE {
+            best.push(entry);
+        }
+    }
+    Ok(json!({
+        "distances": distances.into_iter()
+            .map(|(d, best)| json!({ "distanceM": d, "best": best }))
+            .collect::<Vec<_>>(),
+    }))
 }
 
 #[tokio::main]
@@ -108,20 +267,33 @@ async fn main() {
         key
     });
 
+    let db_path = std::env::var("FITRACE_DB")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/fitrace.db").to_string());
+    let db = open_db(&db_path).expect("無法開啟資料庫");
+    let snap = load_snapshot(&db);
+    let restored: Vec<String> = snap.rooms.keys().cloned().collect();
+
     let state = Arc::new(AppState {
-        rooms: Mutex::new(HashMap::new()),
+        rooms: Mutex::new(snap.rooms),
         tokens: Mutex::new(HashMap::new()),
-        room_counter: Mutex::new(0),
-        rules: Mutex::new(HashMap::new()),
-        rule_counter: Mutex::new(0),
+        room_counter: Mutex::new(snap.room_counter),
+        rules: Mutex::new(snap.rules),
+        rule_counter: Mutex::new(snap.rule_counter),
         admin_key,
+        db: Mutex::new(db),
+        settle_from_ms: now_ms() + RESUME_GRACE_MS,
     });
+    println!("資料庫 {db_path}，還原 {} 個房間", restored.len());
+    for room_id in restored {
+        tokio::spawn(broadcast_loop(state.clone(), room_id));
+    }
 
     // 啟動排程器
     tokio::spawn(scheduler_task(state.clone()));
 
     let app = Router::new()
         .route("/rooms", get(list_rooms))
+        .route("/results/best", get(best_results))
         .route("/rooms/{room_id}/tokens", post(issue_token))
         .route("/rooms/{room_id}/runners/{runner_id}", delete(delete_runner))
         .route("/ws", get(ws_upgrade))
@@ -135,9 +307,10 @@ async fn main() {
         .route("/admin/rules/{rule_id}", delete(admin_delete_rule))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    println!("FitRace server  http://127.0.0.1:8080");
-    println!("大螢幕看板      http://127.0.0.1:8080/display?room=R0001");
+    let port: u16 = std::env::var("FITRACE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.unwrap();
+    println!("FitRace server  http://127.0.0.1:{port}");
+    println!("大螢幕看板      http://127.0.0.1:{port}/display");
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -158,6 +331,21 @@ async fn admin_page() -> Result<Html<String>, StatusCode> {
         .await
         .map(Html)
         .map_err(|_| StatusCode::NOT_FOUND)
+}
+
+#[derive(Deserialize)]
+struct SinceQuery {
+    since: Option<i64>,
+}
+
+/// 大螢幕待機畫面用的最佳成績榜；`since` 由看板依當地時區帶入（例如今天零點）。
+async fn best_results(
+    Query(q): Query<SinceQuery>,
+    State(st): State<Arc<AppState>>,
+) -> Result<Json<Value>, StatusCode> {
+    best_since(&st.db.lock().unwrap(), q.since.unwrap_or(0))
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Deserialize)]
@@ -283,7 +471,7 @@ async fn issue_token(
                     Json(json!({ "error": "REGISTRATION_CLOSED", "status": status })),
                 ));
             }
-            if room.capacity.is_some_and(|cap| room.runners.len() >= cap as usize) {
+            if room.runners.len() >= room.capacity as usize {
                 return Err(err(StatusCode::CONFLICT, "ROOM_FULL"));
             }
             if busy_elsewhere {
@@ -327,7 +515,7 @@ async fn issue_token(
                 avatar_url: req.avatar_url,
                 lane,
                 field_size: room.runners.len(),
-                capacity: room.capacity,
+                capacity: Some(room.capacity),
                 tier: req.tier,
                 bio: req.bio,
                 pr5k: req.pr5k,
@@ -473,7 +661,8 @@ async fn admin_create_room(
         .unwrap_or_else(|| fitrace_live::default_cutoff_minutes(req.distance_m));
     let cutoff_ms = (cutoff_minutes as i64) * 60 * 1000;
 
-    let room_id = create_room(&st, req.title.clone(), req.distance_m, req.capacity, cutoff_ms);
+    let capacity = req.capacity.unwrap_or(DEFAULT_CAPACITY);
+    let room_id = create_room(&st, req.title.clone(), req.distance_m, capacity, cutoff_ms);
 
     let now = now_ms();
     let rooms = st.rooms.lock().unwrap();
@@ -518,15 +707,7 @@ async fn admin_end_race(
         return Err(StatusCode::CONFLICT);
     }
 
-    room.closed_at_ms = Some(now);
-    let _ = room.tx.send(
-        serde_json::to_string(&ServerMsg::RaceClosed {
-            room_id: room_id.clone(),
-            closed_at_server_time: now,
-            reason: "ORGANIZER".to_string(),
-        })
-        .unwrap(),
-    );
+    close_room(&st, &room_id, room, now, "ORGANIZER");
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -607,7 +788,7 @@ async fn admin_create_rule(
 
     let cutoff_minutes = req.cutoff_minutes
         .unwrap_or_else(|| fitrace_live::default_cutoff_minutes(req.distance_m));
-    let min_runners = req.min_runners.unwrap_or(2);
+    let min_runners = req.min_runners.unwrap_or(1);
     let wait_seconds = req.wait_seconds.unwrap_or(60);
 
     let mut counter = st.rule_counter.lock().unwrap();
@@ -617,7 +798,7 @@ async fn admin_create_rule(
     let rule = Rule {
         title: req.title,
         distance_m: req.distance_m,
-        capacity: req.capacity,
+        capacity: req.capacity.unwrap_or(DEFAULT_CAPACITY),
         cutoff_minutes,
         min_runners,
         wait_seconds,
@@ -647,15 +828,38 @@ async fn admin_delete_rule(
     st.rules.lock().unwrap().remove(&rule_id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    // 規則沒了，它名下還在等人的房間不會再有人發令，一併取消
+    let now = now_ms();
+    let mut rooms = st.rooms.lock().unwrap();
+    let orphans: Vec<String> = rooms
+        .iter()
+        .filter(|(_, r)| {
+            r.rule_id.as_deref() == Some(rule_id.as_str())
+                && room_status(r.closed_at_ms, r.start_at_ms, now) == RoomStatus::Open
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for room_id in &orphans {
+        if let Some(room) = rooms.remove(room_id) {
+            let _ = room.tx.send(
+                serde_json::to_string(&ServerMsg::RaceCancelled { room_id: room_id.clone() }).unwrap(),
+            );
+        }
+    }
+    drop(rooms);
+    st.tokens.lock().unwrap().retain(|_, info| !orphans.contains(&info.room_id));
+
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// 排程器：自動管理根據規則開啟的房間。
 async fn scheduler_task(st: Arc<AppState>) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut last_snapshot = String::new();
     loop {
         tick.tick().await;
         let now = now_ms();
+        persist(&st, &mut last_snapshot);
 
         // 為每條規則確保有一個Open房間
         {
@@ -804,18 +1008,17 @@ async fn handle_socket(sock: WebSocket, st: Arc<AppState>, room_id: String, runn
     // ponytail: 斷線不移除選手，其最後狀態留在榜上（等同「掉線凍結」）
 }
 
-fn create_room(st: &Arc<AppState>, title: String, distance_m: f64, capacity: Option<u32>, cutoff_ms: i64) -> String {
+fn create_room(st: &Arc<AppState>, title: String, distance_m: f64, capacity: u32, cutoff_ms: i64) -> String {
     let mut counter = st.room_counter.lock().unwrap();
     *counter += 1;
     let room_id = format!("R{:04}", counter);
 
     let mut rooms = st.rooms.lock().unwrap();
-    let (tx, _) = broadcast::channel(64);
     rooms.insert(
         room_id.clone(),
         Room {
             title,
-            tx,
+            tx: room_channel(),
             runners: HashMap::new(),
             start_at_ms: None,
             race_distance_m: distance_m,
@@ -844,8 +1047,10 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
             return;
         };
 
-        // 比賽進行中才需要結算判定
-        let running_since = room.start_at_ms.filter(|&t| t <= now && room.closed_at_ms.is_none());
+        // 比賽進行中才需要結算判定；剛重啟時先等選手端重連
+        let running_since = room
+            .start_at_ms
+            .filter(|&t| t <= now && room.closed_at_ms.is_none() && now >= st.settle_from_ms);
         if let Some(start_at) = running_since {
             let finished = room.runners.values().filter(|r| r.finish_time_ms.is_some()).count();
             let cutoff_at = start_at + room.cutoff_ms;
@@ -863,17 +1068,7 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
                         .unwrap(),
                     );
                 }
-                Settlement::Close(reason) => {
-                    room.closed_at_ms = Some(now);
-                    let _ = room.tx.send(
-                        serde_json::to_string(&ServerMsg::RaceClosed {
-                            room_id: room_id.clone(),
-                            closed_at_server_time: now,
-                            reason: reason.to_string(),
-                        })
-                        .unwrap(),
-                    );
-                }
+                Settlement::Close(reason) => close_room(&st, &room_id, room, now, reason),
             }
         }
 
@@ -898,5 +1093,93 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
         }))
         .unwrap();
         let _ = room.tx.send(payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(start_at: i64, runners: &[(&str, Option<i64>)]) -> Room {
+        let runners = runners.iter().map(|&(id, finish_time_ms)| {
+            (id.to_string(), RunnerState {
+                runner_id: id.to_string(),
+                name: id.to_string(),
+                country: None,
+                bib: None,
+                avatar_url: None,
+                device_id: format!("dev-{id}"),
+                distance: if finish_time_ms.is_some() { 1000.0 } else { 400.0 },
+                pace: "04'00\"".to_string(),
+                speed_kmh: 15.0,
+                cadence: 180,
+                finish_time_ms,
+                lane: None,
+                tier: None,
+                bio: None,
+                pr5k: None,
+                target_pace: None,
+                vo2_max: None,
+            })
+        });
+        Room {
+            title: "Test".to_string(),
+            tx: room_channel(),
+            runners: runners.collect(),
+            start_at_ms: Some(start_at),
+            race_distance_m: 1000.0,
+            capacity: DEFAULT_CAPACITY,
+            cutoff_ms: 600_000,
+            closed_at_ms: None,
+            auto_start_at_ms: None,
+            rule_id: None,
+            finish_countdown_cutoff_ms: None,
+        }
+    }
+
+    #[test]
+    fn results_are_saved_once_and_best_is_per_runner() {
+        let mut db = open_db(":memory:").unwrap();
+        let first = room(1_000, &[("A", Some(71_000)), ("B", Some(81_000)), ("C", None)]);
+        save_results(&mut db, "R0001", &first, 100_000, "CUTOFF").unwrap();
+        // 重啟後同一場再結算一次，不能多出第二份成績
+        save_results(&mut db, "R0001", &first, 100_500, "CUTOFF").unwrap();
+        save_results(&mut db, "R0002", &room(200_000, &[("A", Some(265_000))]), 300_000, "ALL_FINISHED").unwrap();
+        let rows: i64 = db.query_row("SELECT COUNT(*) FROM results", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 4);
+
+        // A 取較快的那次（65s），C 沒完賽不上榜
+        let best = best_since(&db, 0).unwrap();
+        let list: Vec<(&str, i64)> = best["distances"][0]["best"].as_array().unwrap().iter()
+            .map(|e| (e["runnerId"].as_str().unwrap(), e["durationMs"].as_i64().unwrap()))
+            .collect();
+        assert_eq!(best["distances"][0]["distanceM"], 1000.0);
+        assert_eq!(list, vec![("A", 65_000), ("B", 80_000)]);
+
+        // since 之前結算的場次不算
+        let later = best_since(&db, 200_000).unwrap();
+        assert_eq!(later["distances"][0]["best"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn snapshot_restores_state_and_tolerates_garbage() {
+        let db = open_db(":memory:").unwrap();
+        assert!(load_snapshot(&db).rooms.is_empty());
+
+        let mut rooms = HashMap::new();
+        rooms.insert("R0007".to_string(), room(1_000, &[("A", Some(71_000)), ("B", None)]));
+        let json = json!({ "rooms": rooms, "room_counter": 7 }).to_string();
+        db.execute("INSERT INTO state (id, json) VALUES (1, ?1)", [&json]).unwrap();
+
+        let snap = load_snapshot(&db);
+        let restored = &snap.rooms["R0007"];
+        assert_eq!((snap.room_counter, snap.rule_counter), (7, 0));
+        assert_eq!(restored.start_at_ms, Some(1_000));
+        assert_eq!(restored.runners["A"].finish_time_ms, Some(71_000));
+        assert_eq!(restored.runners["B"].device_id, "dev-B");
+
+        // 壞掉的快照不能讓伺服器起不來
+        db.execute("UPDATE state SET json = '{\"rooms\": 42}'", []).unwrap();
+        assert!(load_snapshot(&db).rooms.is_empty());
     }
 }

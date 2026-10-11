@@ -7,7 +7,13 @@ edition = "2024"
 axum = { version = "0.8.9", features = ["ws"] }
 futures-util = "0.3.34"
 rand = "0.10.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-tungstenite = "0.30.0"
+
+# 任何 panic 都直接結束程序，交給 run.sh 重啟並由 fitrace.db 還原；
+# 否則持鎖時 panic 會讓鎖中毒，程序活著但所有請求都失敗。
+[profile.release]
+panic = "abort"

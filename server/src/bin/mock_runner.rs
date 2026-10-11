@@ -8,9 +8,13 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message;
 
-const HOST: &str = "127.0.0.1:8080";
 const SYNC_SAMPLES: usize = 5; // §3.1
 const REPORT_INTERVAL_MS: u64 = 400; // 2~3Hz（§2.2-4）
+
+/// 伺服器位址；埠號與伺服器共用 `FITRACE_PORT`。
+fn host() -> String {
+    format!("127.0.0.1:{}", std::env::var("FITRACE_PORT").unwrap_or_else(|_| "8080".into()))
+}
 
 #[tokio::main]
 async fn main() {
@@ -24,7 +28,7 @@ async fn main() {
     let base_kmh = 3600.0 / pace_sec_per_km;
 
     let token = request_token(&room_id, &runner_id, &name, country.as_deref(), avatar.as_deref()).await;
-    let url = format!("ws://{HOST}/ws?token={token}");
+    let url = format!("ws://{}/ws?token={token}", host());
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("WebSocket 連線失敗");
@@ -148,11 +152,12 @@ async fn request_token(
         "deviceId": format!("mock-{}", runner_id),
     })
     .to_string();
+    let host = host();
     let req = format!(
-        "POST /rooms/{room_id}/tokens HTTP/1.1\r\nHost: {HOST}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /rooms/{room_id}/tokens HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    let mut stream = tokio::net::TcpStream::connect(HOST)
+    let mut stream = tokio::net::TcpStream::connect(&host)
         .await
         .expect("伺服器未啟動？先執行 cargo run --bin fitrace_live");
     stream.write_all(req.as_bytes()).await.unwrap();

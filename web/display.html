@@ -174,6 +174,26 @@
   .row.lead.done .fill { background: linear-gradient(90deg, var(--gold-deep), var(--gold)); box-shadow: 0 0 14px rgba(255,215,0,.5); }
   .row.wait { opacity: .62; }
 
+  /* ───────── 待機畫面（自動跟隨模式、場上沒有比賽時） ───────── */
+  #idle { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: clamp(18px, 2.4vw, 44px); }
+  #idle[hidden] { display: none; }
+  #idle h2 { margin-bottom: clamp(10px, 1vw, 18px); }
+  .card {
+    background: linear-gradient(180deg, var(--card), var(--card-2));
+    border: 1px solid var(--border); border-radius: 14px;
+    padding: clamp(14px, 1.6vw, 28px); margin-bottom: var(--gap);
+  }
+  .card h3 { font-size: clamp(18px, 2vw, 34px); font-weight: 700; line-height: 1.15; }
+  .card h3 span { color: var(--cyan); margin-right: .5em; }
+  .card p { color: var(--muted); font-size: clamp(12px, 1.1vw, 19px); margin-top: 6px; letter-spacing: .06em; text-transform: uppercase; }
+  #todayBest { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 0 var(--gap); align-items: start; }
+  .best { display: flex; align-items: baseline; gap: .7em; padding: .32em 0; font-size: clamp(14px, 1.4vw, 24px); font-variant-numeric: tabular-nums; }
+  .best .pos { flex: none; width: 1.4em; color: var(--muted); font-weight: 700; }
+  .best .who { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .best .time { flex: none; font-weight: 700; }
+  .best.top .pos, .best.top .time { color: var(--gold); }
+  .idle-note { color: var(--muted); letter-spacing: .1em; padding: 12px 4px; }
+
   #flash {
     position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 99;
     font-weight: 700; font-style: italic; font-size: min(24vw, 320px); color: var(--gold);
@@ -204,14 +224,25 @@
 <div class="rule"></div>
 
 <div id="board"><div id="empty">等待選手加入…</div></div>
+<div id="idle" hidden>
+  <section><h2 class="lbl">Next races</h2><div id="nextRaces"></div></section>
+  <section><h2 class="lbl">Today's best</h2><div id="todayBest"></div></section>
+</div>
 <div id="flash"></div>
 
 <script>
 const params = new URLSearchParams(location.search);
-const room = params.get("room") || "ROOM_101";
-document.getElementById("roomLabel").textContent = room.replace(/_/g, " ");
+// ?room=R0001 釘住單一房間；不帶參數就自動跟隨場上的比賽，沒有比賽時顯示待機畫面
+const pinned = params.get("room");
+let room;             // 目前顯示的房間；null = 待機，undefined = 尚未決定
+let gen = 0;          // 每換一次房間 +1，舊連線的回呼據此自行作廢
+let socket = null;
+let autoStartAt = null; // 自動發令的預定時刻（OPEN 房間倒數用）
 
 const board = document.getElementById("board");
+const emptyEl = document.getElementById("empty");
+const idleEl = document.getElementById("idle");
+const titleEl = document.getElementById("eventTitle");
 const clockEl = document.getElementById("clock");
 const flashEl = document.getElementById("flash");
 const css = (n) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(n));
@@ -238,23 +269,27 @@ async function displayToken() {
 
 let backoff = 500;
 async function connect() {
+  const my = gen;
   let ws;
   try {
     const token = await displayToken();
+    if (my !== gen) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
   } catch {
-    return retry();
+    return retry(my);
   }
+  socket = ws;
   ws.onopen = () => { backoff = 500; syncClock(ws); };
-  ws.onclose = () => retry();
+  ws.onclose = () => retry(my);
   ws.onerror = () => ws.close();
-  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onmessage = (ev) => { if (my === gen) handle(JSON.parse(ev.data)); };
 }
 
 // §5.2 指數退避重連
-function retry() {
-  setTimeout(connect, backoff);
+function retry(my) {
+  if (my !== gen) return;
+  setTimeout(() => { if (my === gen) connect(); }, backoff);
   backoff = Math.min(backoff * 2, 10000);
 }
 
@@ -262,8 +297,98 @@ function retry() {
 function syncClock(ws) {
   bestRtt = Infinity;
   for (let i = 0; i < 5; i++) {
-    setTimeout(() => ws.send(JSON.stringify({ type: "PING", clientSendTime: Date.now() })), i * 120);
+    setTimeout(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "PING", clientSendTime: Date.now() }));
+    }, i * 120);
   }
+}
+
+// 切到指定房間（/rooms 的一筆）或待機（null）：清掉上一場的畫面再重新連線
+function follow(info) {
+  const id = info ? info.roomId : null;
+  if (id === room) return;
+  gen++;
+  socket?.close();
+  socket = null;
+  room = id;
+  backoff = 500;
+  startAt = closedAt = raceOverAt = lastCount = null;
+  for (const row of rows.values()) row.el.remove();
+  rows.clear();
+  board.style.height = "";
+  emptyEl.hidden = false;
+  clockEl.classList.remove("count");
+  board.hidden = !room;
+  idleEl.hidden = !!room;
+  document.getElementById("roomLabel").textContent = room ? room.replace(/_/g, " ") : "STANDBY";
+  if (info?.raceDistanceMeters) raceDistance = info.raceDistanceMeters;
+  titleEl.textContent = room ? raceTitle() : "Step on any treadmill to race";
+  if (room) connect();
+  else loadBest();
+}
+
+// ── 自動跟隨 ──────────────────────────────────────────────
+const RESULTS_HOLD_MS = 30000; // 結算後停在成績畫面多久，與選手端的賽後畫面同長
+const COUNTDOWN_MS = 5000;     // 發令後的倒數，須與伺服器一致（§3.2）
+
+// 決定該顯示哪一場：正在看的比賽不中途換台；否則先挑進行中的，再挑有人報名的
+function pickRoom(rooms, now, currentId) {
+  const live = (r) => r.status === "STARTING" || r.status === "RUNNING";
+  const filling = (r) => r.status === "OPEN" && r.runnerCount > 0;
+  const most = (list) => list.sort((a, b) => b.runnerCount - a.runnerCount || a.roomId.localeCompare(b.roomId))[0];
+  const cur = rooms.find((r) => r.roomId === currentId);
+  if (cur && (live(cur) || (cur.status === "FINISHED" && now - cur.closedAtServerTime < RESULTS_HOLD_MS))) return cur;
+  return most(rooms.filter(live)) || (cur && filling(cur) ? cur : most(rooms.filter(filling))) || null;
+}
+
+async function poll() {
+  try {
+    const data = await (await fetch("/rooms")).json();
+    if (bestRtt === Infinity) offsetMs = data.serverTime - Date.now(); // WebSocket 校時前的粗略值
+    const pick = pickRoom(data.rooms, data.serverTime, room);
+    follow(pick);
+    autoStartAt = pick?.autoStartAtServerTime ?? null;
+    if (!pick) renderNext(data.rooms.filter((r) => r.status === "OPEN"));
+  } catch {}
+  setTimeout(poll, 2000);
+}
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const note = (text) => el("div", "idle-note", text);
+
+function renderNext(open) {
+  document.getElementById("nextRaces").replaceChildren(...(open.length ? open.map((r) => {
+    const card = el("div", "card");
+    const h = el("h3");
+    h.append(el("span", "", distLabel(r.raceDistanceMeters)), r.title);
+    card.append(h, el("p", "", `Open · ${r.capacity} lanes · join on any treadmill`));
+    return card;
+  }) : [note("No races open right now")]));
+}
+
+// 今日最佳：「今天」以看板所在時區的零點為界
+async function loadBest() {
+  try {
+    const since = new Date().setHours(0, 0, 0, 0);
+    const { distances } = await (await fetch(`/results/best?since=${since}`)).json();
+    document.getElementById("todayBest").replaceChildren(...(distances.length ? distances.map((d) => {
+      const card = el("div", "card");
+      const h = el("h3");
+      h.append(el("span", "", distLabel(d.distanceM)));
+      card.append(h, ...d.best.slice(0, 5).map((b, i) => {
+        const row = el("div", i ? "best" : "best top");
+        row.append(el("span", "pos", i + 1), el("span", "who", `${flagEmoji(b.country)} ${b.name}`.trim()),
+          el("span", "time", fmtClock(b.durationMs, true)));
+        return row;
+      }));
+      return card;
+    }) : [note("No finishers yet today — be the first")]));
+  } catch {}
 }
 
 function handle(msg) {
@@ -277,7 +402,7 @@ function handle(msg) {
     startAt = msg.startAtServerTime;
     raceDistance = msg.raceDistanceMeters;
     closedAt = null;
-    document.getElementById("eventTitle").textContent = `World Championship — ${distLabel()} Treadmill Challenge`;
+    titleEl.textContent = raceTitle();
     for (const row of rows.values()) row.ptitle.textContent = `${distLabel()} Track Progress`;
     // 重連或中途加入時已經開賽了，別補放一次倒數與 GO
     lastCount = Date.now() + offsetMs >= startAt ? 0 : null;
@@ -289,7 +414,7 @@ function handle(msg) {
 }
 
 function render(rankings) {
-  if (rankings.length) document.getElementById("empty")?.remove();
+  emptyEl.hidden = rankings.length > 0;
   // Use closedAt if set by RACE_CLOSED; otherwise compute from rankings
   if (closedAt !== null) {
     raceOverAt = closedAt;
@@ -406,8 +531,8 @@ function makeRow() {
 }
 
 // 5000 → "5KM"，400 → "400M"
-const distLabel = () =>
-  raceDistance >= 1000 && raceDistance % 1000 === 0 ? `${raceDistance / 1000}KM` : `${raceDistance}M`;
+const distLabel = (m = raceDistance) => (m >= 1000 && m % 1000 === 0 ? `${m / 1000}KM` : `${m}M`);
+const raceTitle = () => `World Championship — ${distLabel()} Treadmill Challenge`;
 
 const initials = (n) => n.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 
@@ -440,7 +565,10 @@ let lastCount = null;
 let raceOverAt = null;
 function tick() {
   if (startAt === null) {
-    clockEl.textContent = "--:--";
+    // 自動發令已排定：顯示到起跑為止的秒數（含發令後的倒數）
+    const remain = autoStartAt ? autoStartAt + COUNTDOWN_MS - serverNow() : 0;
+    clockEl.textContent = remain > 0 ? `T-${Math.ceil(remain / 1000)}` : "--:--";
+    clockEl.classList.toggle("count", remain > 0);
   } else if (raceOverAt !== null) {
     clockEl.classList.add("count");
     clockEl.textContent = fmtClock(raceOverAt - startAt, true);
@@ -473,8 +601,28 @@ async function keepAwake() {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAwake(); });
 document.addEventListener("click", keepAwake, { once: true });
 
+// /display?selftest：pickRoom 的自我檢查，結果看 console
+if (params.has("selftest")) {
+  const r = (roomId, status, runnerCount, closedAtServerTime = null) => ({ roomId, status, runnerCount, closedAtServerTime });
+  const pick = (rooms, cur) => pickRoom(rooms, 100000, cur)?.roomId ?? null;
+  console.assert(pick([r("A", "OPEN", 0)], null) === null, "空房不顯示");
+  console.assert(pick([r("A", "OPEN", 2), r("B", "RUNNING", 1)], "A") === "B", "進行中優先於報名中");
+  console.assert(pick([r("A", "RUNNING", 1), r("B", "RUNNING", 5)], "A") === "A", "比賽中不換台");
+  console.assert(pick([r("A", "FINISHED", 3, 80000), r("B", "RUNNING", 5)], "A") === "A", "成績畫面停留期間不換台");
+  console.assert(pick([r("A", "FINISHED", 3, 60000), r("B", "RUNNING", 5)], "A") === "B", "停留結束後換下一場");
+  console.assert(pick([r("A", "OPEN", 1), r("B", "OPEN", 3)], "A") === "A", "報名中的兩間不來回跳");
+  console.assert(pick([r("A", "FINISHED", 3, 60000)], "A") === null, "沒有比賽就待機");
+  console.log("selftest done");
+}
+
 keepAwake();
-connect();
+if (pinned) {
+  follow({ roomId: pinned });
+} else {
+  follow(null);
+  poll();
+  setInterval(() => { if (!room) loadBest(); }, 30000);
+}
 tick();
 </script>
 </body>

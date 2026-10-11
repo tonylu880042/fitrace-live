@@ -12,3 +12,7 @@ server/target/
 
 # OS
 .DS_Store
+
+# 伺服器資料（成績與狀態快照）
+server/fitrace.db*
+server/fitrace.log

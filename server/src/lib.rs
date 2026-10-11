@@ -116,7 +116,7 @@ pub enum ServerMsg {
 }
 
 /// 伺服器保存的選手最新狀態。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnerState {
     pub runner_id: String,
     pub name: String,
@@ -216,7 +216,7 @@ pub enum AutoStart {
 pub fn auto_start(
     count: u32,
     min_runners: u32,
-    capacity: Option<u32>,
+    capacity: u32,
     wait_ms: i64,
     auto_start_at_ms: Option<i64>,
     now_ms: i64,
@@ -224,7 +224,7 @@ pub fn auto_start(
     if count < min_runners {
         return AutoStart::Hold(None);
     }
-    if capacity.is_some_and(|cap| count >= cap) {
+    if count >= capacity {
         return AutoStart::Go;
     }
     match auto_start_at_ms {
@@ -473,15 +473,15 @@ mod tests {
         let now = 50_000;
         let wait = 60_000;
         // 人數不足：撤銷已排定的倒數
-        assert_eq!(auto_start(1, 2, Some(8), wait, Some(now + 10_000), now), AutoStart::Hold(None));
+        assert_eq!(auto_start(1, 2, 8, wait, Some(now + 10_000), now), AutoStart::Hold(None));
         // 人數剛到：開始倒數；倒數中維持原時刻
-        assert_eq!(auto_start(2, 2, Some(8), wait, None, now), AutoStart::Hold(Some(now + wait)));
-        assert_eq!(auto_start(3, 2, Some(8), wait, Some(now + 10_000), now), AutoStart::Hold(Some(now + 10_000)));
+        assert_eq!(auto_start(2, 2, 8, wait, None, now), AutoStart::Hold(Some(now + wait)));
+        assert_eq!(auto_start(3, 2, 8, wait, Some(now + 10_000), now), AutoStart::Hold(Some(now + 10_000)));
         // 倒數結束或額滿：發令
-        assert_eq!(auto_start(2, 2, Some(8), wait, Some(now), now), AutoStart::Go);
-        assert_eq!(auto_start(8, 2, Some(8), wait, None, now), AutoStart::Go);
-        // 不設上限就只看倒數
-        assert_eq!(auto_start(50, 2, None, wait, Some(now + 1), now), AutoStart::Hold(Some(now + 1)));
+        assert_eq!(auto_start(2, 2, 8, wait, Some(now), now), AutoStart::Go);
+        assert_eq!(auto_start(8, 2, 8, wait, None, now), AutoStart::Go);
+        // 一個人也發車（班次式：時間到有幾個人就幾個人跑）
+        assert_eq!(auto_start(1, 1, 8, wait, Some(now), now), AutoStart::Go);
     }
 
     #[test]
