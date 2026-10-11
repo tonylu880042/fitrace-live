@@ -73,11 +73,10 @@ async fn main() {
         let Message::Text(txt) = msg else { continue };
         if let Ok(ServerMsg::RaceScheduled { start_at_server_time, race_distance_meters, .. }) =
             serde_json::from_str(&txt)
+            && start_at_server_time > now_ms() + offset_ms
         {
-            if start_at_server_time > now_ms() + offset_ms {
-                start_at = Some(start_at_server_time);
-                race_distance = race_distance_meters;
-            }
+            start_at = Some(start_at_server_time);
+            race_distance = race_distance_meters;
         }
     }
     let start_at = start_at.unwrap();
@@ -87,7 +86,7 @@ async fn main() {
     tokio::time::sleep(Duration::from_millis(wait)).await;
 
     // 依配速推進距離。正弦擾動讓各選手名次會互相交換，且同參數可重現。
-    let phase = runner_id.bytes().map(|b| b as f64).sum::<f64>() % 6.283;
+    let phase = runner_id.bytes().map(|b| b as f64).sum::<f64>() % std::f64::consts::TAU;
     let mut distance = 0.0f64;
     // 從「現在」起算而非從發令時刻，否則中途加入已開賽的房間會一次補出好幾公里
     let mut prev = (server_now().max(start_at), 0.0f64);

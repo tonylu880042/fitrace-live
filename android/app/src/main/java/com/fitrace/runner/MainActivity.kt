@@ -778,7 +778,6 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
             bib = "341",
             avatarUrl = null,
             lane = 3,
-            deviceId = "TREADMILL CONSOLE #03",
             fieldSize = (s.fieldSize.takeIf { it > 0 } ?: 5) + 1,
             capacity = 8,
             tier = "WORLD CLASS TIER",
@@ -1507,7 +1506,7 @@ private fun BoxScope.NewRunnerOverlay(
                             )
                             Spacer(Modifier.width((6 * k).dp))
                             Text(
-                                text = evt.deviceId ?: "TREADMILL CONSOLE #%02d".format(evt.lane ?: 3),
+                                text = "TREADMILL CONSOLE #%02d".format(evt.lane ?: 3),
                                 color = Label,
                                 fontFamily = Grotesk,
                                 fontWeight = FontWeight.SemiBold,

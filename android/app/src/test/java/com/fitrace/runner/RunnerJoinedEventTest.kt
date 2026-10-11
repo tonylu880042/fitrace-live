@@ -20,7 +20,6 @@ class RunnerJoinedEventTest {
                 "bib": "341",
                 "avatarUrl": "https://example.com/eliud.jpg",
                 "lane": 3,
-                "deviceId": "TREADMILL CONSOLE #03",
                 "fieldSize": 6,
                 "capacity": 8,
                 "tier": "WORLD CLASS TIER",
@@ -43,7 +42,6 @@ class RunnerJoinedEventTest {
             bib = if (msg.has("bib") && !msg.isNull("bib")) msg.getString("bib") else null,
             avatarUrl = if (msg.has("avatarUrl") && !msg.isNull("avatarUrl")) msg.getString("avatarUrl") else null,
             lane = if (msg.has("lane") && !msg.isNull("lane")) msg.getInt("lane") else null,
-            deviceId = if (msg.has("deviceId") && !msg.isNull("deviceId")) msg.getString("deviceId") else null,
             fieldSize = msg.optInt("fieldSize", 0),
             capacity = if (msg.has("capacity") && !msg.isNull("capacity")) msg.getInt("capacity") else null,
             tier = if (msg.has("tier") && !msg.isNull("tier")) msg.getString("tier") else null,
@@ -60,7 +58,6 @@ class RunnerJoinedEventTest {
         assertEquals("KE", event.country)
         assertEquals("341", event.bib)
         assertEquals(3, event.lane)
-        assertEquals("TREADMILL CONSOLE #03", event.deviceId)
         assertEquals(6, event.fieldSize)
         assertEquals(8, event.capacity)
         assertEquals("WORLD CLASS TIER", event.tier)
@@ -91,7 +88,6 @@ class RunnerJoinedEventTest {
             bib = if (msg.has("bib") && !msg.isNull("bib")) msg.getString("bib") else null,
             avatarUrl = if (msg.has("avatarUrl") && !msg.isNull("avatarUrl")) msg.getString("avatarUrl") else null,
             lane = if (msg.has("lane") && !msg.isNull("lane")) msg.getInt("lane") else null,
-            deviceId = if (msg.has("deviceId") && !msg.isNull("deviceId")) msg.getString("deviceId") else null,
             fieldSize = msg.optInt("fieldSize", 0),
             capacity = if (msg.has("capacity") && !msg.isNull("capacity")) msg.getInt("capacity") else null,
             tier = if (msg.has("tier") && !msg.isNull("tier")) msg.getString("tier") else null,

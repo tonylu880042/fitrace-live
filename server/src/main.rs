@@ -33,18 +33,7 @@ enum Role {
 struct TokenInfo {
     room_id: String,
     runner_id: String,
-    name: String,
-    country: Option<String>,
-    bib: Option<String>,
-    avatar_url: Option<String>,
-    device_id: String,
     role: Role,
-    lane: Option<u32>,
-    tier: Option<String>,
-    bio: Option<String>,
-    pr5k: Option<String>,
-    target_pace: Option<String>,
-    vo2_max: Option<f32>,
 }
 
 struct Room {
@@ -59,6 +48,35 @@ struct Room {
     auto_start_at_ms: Option<i64>,
     rule_id: Option<String>,
     finish_countdown_cutoff_ms: Option<i64>,
+}
+
+impl Room {
+    /// 排程起跑（§3.2）：T_start = now + 5000ms，並通知房內所有人。回傳 `(起跑, 關門)` 時刻。
+    fn schedule_start(&mut self, room_id: &str, now: i64) -> (i64, i64) {
+        let start_at = now + COUNTDOWN_MS;
+        let cutoff_at = start_at + self.cutoff_ms;
+        self.start_at_ms = Some(start_at);
+        self.auto_start_at_ms = None;
+        let _ = self.tx.send(
+            serde_json::to_string(&ServerMsg::RaceScheduled {
+                room_id: room_id.to_string(),
+                start_at_server_time: start_at,
+                race_distance_meters: self.race_distance_m,
+                cutoff_at_server_time: cutoff_at,
+            })
+            .unwrap(),
+        );
+        (start_at, cutoff_at)
+    }
+
+    /// 目前生效的關門時刻：已啟動衝刺關門就以它為準；已結算則沒有剩餘時間。
+    fn cutoff_at(&self, start_at: i64) -> i64 {
+        if self.closed_at_ms.is_some() {
+            start_at
+        } else {
+            self.finish_countdown_cutoff_ms.unwrap_or(start_at + self.cutoff_ms)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -228,39 +246,36 @@ async fn issue_token(
     State(st): State<Arc<AppState>>,
     Json(req): Json<TokenReq>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let err = |code: StatusCode, error: &str| (code, Json(json!({ "error": error })));
     let role = req.role.unwrap_or(Role::Runner);
     let now = now_ms();
-    let runner_id = req.runner_id.clone();
-    let name = req.name.clone().unwrap_or_else(|| runner_id.clone());
-    let device_id_opt = req.device_id.clone();
+    let runner_id = req.runner_id;
+    let device_id = req.device_id.as_deref().unwrap_or("").trim().to_string();
+    if role == Role::Runner && device_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "DEVICE_ID_REQUIRED"));
+    }
+
+    // rooms 鎖一路握到 Token 寫入：報名與發 Token 是同一個原子操作
+    let mut rooms = st.rooms.lock().unwrap();
+    // 一個選手 ID 同時只能在一場未結束的比賽中（§9.3）
+    let busy_elsewhere = role == Role::Runner
+        && rooms.iter().any(|(other_id, other)| {
+            other_id != &room_id
+                && other.runners.contains_key(&runner_id)
+                && room_status(other.closed_at_ms, other.start_at_ms, now) != RoomStatus::Finished
+        });
+    let room = rooms
+        .get_mut(&room_id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "ROOM_NOT_FOUND"))?;
 
     if role == Role::Runner {
-        let device_id = device_id_opt.as_deref().unwrap_or("").trim();
-        if device_id.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "DEVICE_ID_REQUIRED" })),
-            ));
-        }
-
-        let mut rooms = st.rooms.lock().unwrap();
-        let room = rooms.get(&room_id).ok_or_else(|| (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "ROOM_NOT_FOUND" })),
-        ))?;
-
-        let mut assigned_lane = req.lane;
-        let is_existing = if let Some(existing) = room.runners.get(&runner_id) {
+        if let Some(existing) = room.runners.get(&runner_id) {
+            // 重連：只有原本報名的裝置能沿用
             if existing.device_id != device_id {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({ "error": "RUNNER_ID_IN_USE" })),
-                ));
+                return Err(err(StatusCode::CONFLICT, "RUNNER_ID_IN_USE"));
             }
-            assigned_lane = existing.lane;
-            true
         } else {
-            // 新報名：檢查房間狀態
+            // 新報名
             let status = room_status(room.closed_at_ms, room.start_at_ms, now);
             if status != RoomStatus::Open {
                 return Err((
@@ -268,148 +283,73 @@ async fn issue_token(
                     Json(json!({ "error": "REGISTRATION_CLOSED", "status": status })),
                 ));
             }
-
-            // 檢查容量
-            if let Some(cap) = room.capacity {
-                if room.runners.len() >= cap as usize {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        Json(json!({ "error": "ROOM_FULL" })),
-                    ));
-                }
+            if room.capacity.is_some_and(|cap| room.runners.len() >= cap as usize) {
+                return Err(err(StatusCode::CONFLICT, "ROOM_FULL"));
             }
-            false
-        };
+            if busy_elsewhere {
+                return Err(err(StatusCode::CONFLICT, "RUNNER_ID_IN_USE"));
+            }
 
-        if !is_existing {
-            // 檢查選手是否在其他非完賽房間
-            let in_other_room = rooms.iter().any(|(other_id, other_room)| {
-                other_id != &room_id
-                    && {
-                        let other_status = room_status(other_room.closed_at_ms, other_room.start_at_ms, now);
-                        other_status != RoomStatus::Finished && other_room.runners.contains_key(&runner_id)
-                    }
+            let lane = req.lane.or_else(|| {
+                let used: std::collections::HashSet<u32> =
+                    room.runners.values().filter_map(|r| r.lane).collect();
+                (1..=100).find(|l| !used.contains(l))
             });
-
-            if in_other_room {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({ "error": "RUNNER_ID_IN_USE" })),
-                ));
-            }
-
-            if assigned_lane.is_none() {
-                let used_lanes: std::collections::HashSet<u32> = rooms
-                    .get(&room_id)
-                    .map(|r| r.runners.values().filter_map(|runner| runner.lane).collect())
-                    .unwrap_or_default();
-                assigned_lane = (1..=100).find(|l| !used_lanes.contains(l));
-            }
-
-            // 新增選手到房間（原子操作，不 drop 鎖）
-            if let Some(r) = rooms.get_mut(&room_id) {
-                let runner_state = RunnerState {
+            let name = req.name.unwrap_or_else(|| runner_id.clone());
+            room.runners.insert(
+                runner_id.clone(),
+                RunnerState {
                     runner_id: runner_id.clone(),
                     name: name.clone(),
                     country: req.country.clone(),
                     bib: req.bib.clone(),
                     avatar_url: req.avatar_url.clone(),
-                    device_id: device_id.to_string(),
+                    device_id,
                     distance: 0.0,
                     pace: "--'--\"".to_string(),
                     speed_kmh: 0.0,
                     cadence: 0,
                     finish_time_ms: None,
-                    lane: assigned_lane,
+                    lane,
                     tier: req.tier.clone(),
                     bio: req.bio.clone(),
                     pr5k: req.pr5k.clone(),
                     target_pace: req.target_pace.clone(),
                     vo2_max: req.vo2_max,
-                };
-                r.runners.insert(runner_id.clone(), runner_state);
-
-                let field_size = r.runners.len();
-                let capacity = r.capacity;
-                let joined_msg = ServerMsg::RunnerJoined {
-                    room_id: room_id.clone(),
-                    runner_id: runner_id.clone(),
-                    name: name.clone(),
-                    country: req.country.clone(),
-                    bib: req.bib.clone(),
-                    avatar_url: req.avatar_url.clone(),
-                    lane: assigned_lane,
-                    device_id: Some(device_id.to_string()),
-                    field_size,
-                    capacity,
-                    tier: req.tier.clone(),
-                    bio: req.bio.clone(),
-                    pr5k: req.pr5k.clone(),
-                    target_pace: req.target_pace.clone(),
-                    vo2_max: req.vo2_max,
-                    server_time: now,
-                };
-                if let Ok(payload) = serde_json::to_string(&joined_msg) {
-                    let _ = r.tx.send(payload);
-                }
-            }
-        }
-
-        let token = format!("{:032x}", rand::random::<u128>());
-        st.tokens.lock().unwrap().insert(
-            token.clone(),
-            TokenInfo {
+                },
+            );
+            let joined_msg = ServerMsg::RunnerJoined {
                 room_id: room_id.clone(),
-                runner_id,
+                runner_id: runner_id.clone(),
                 name,
                 country: req.country,
                 bib: req.bib,
                 avatar_url: req.avatar_url,
-                device_id: device_id_opt.unwrap_or_default(),
-                role,
-                lane: assigned_lane,
+                lane,
+                field_size: room.runners.len(),
+                capacity: room.capacity,
                 tier: req.tier,
                 bio: req.bio,
                 pr5k: req.pr5k,
                 target_pace: req.target_pace,
                 vo2_max: req.vo2_max,
-            },
-        );
-        Ok(Json(json!({ "token": token, "roomId": room_id })))
-    } else {
-        // DISPLAY token：房間必須存在
-        let rooms = st.rooms.lock().unwrap();
-        rooms.get(&room_id).ok_or_else(|| (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "ROOM_NOT_FOUND" })),
-        ))?;
-        drop(rooms);
-
-        let token = format!("{:032x}", rand::random::<u128>());
-        st.tokens.lock().unwrap().insert(
-            token.clone(),
-            TokenInfo {
-                room_id: room_id.clone(),
-                runner_id,
-                name,
-                country: req.country,
-                bib: req.bib,
-                avatar_url: req.avatar_url,
-                device_id: device_id_opt.unwrap_or_default(),
-                role,
-                lane: None,
-                tier: None,
-                bio: None,
-                pr5k: None,
-                target_pace: None,
-                vo2_max: None,
-            },
-        );
-        Ok(Json(json!({ "token": token, "roomId": room_id })))
+                server_time: now,
+            };
+            if let Ok(payload) = serde_json::to_string(&joined_msg) {
+                let _ = room.tx.send(payload);
+            }
+        }
     }
+
+    let token = format!("{:032x}", rand::random::<u128>());
+    st.tokens.lock().unwrap().insert(
+        token.clone(),
+        TokenInfo { room_id: room_id.clone(), runner_id, role },
+    );
+    Ok(Json(json!({ "token": token, "roomId": room_id })))
 }
 
-/// 排程起跑（§3.2）：T_start = ServerNow + 5000ms，並重置上一場成績。
+/// 手動發令：僅 OPEN 且至少 1 人（§9.2）。
 async fn start_race(
     Path(room_id): Path<String>,
     State(st): State<Arc<AppState>>,
@@ -423,29 +363,8 @@ async fn start_race(
         return Err(StatusCode::CONFLICT);
     }
 
-    let start_at = now + COUNTDOWN_MS;
-    let cutoff_at = start_at + room.cutoff_ms;
-    room.start_at_ms = Some(start_at);
-    room.auto_start_at_ms = None;
-    room.finish_countdown_cutoff_ms = None;
-    for r in room.runners.values_mut() {
-        r.distance = 0.0;
-        r.pace = "--'--\"".to_string();
-        r.speed_kmh = 0.0;
-        r.cadence = 0;
-        r.finish_time_ms = None;
-    }
-    let distance = room.race_distance_m;
-    let _ = room.tx.send(
-        serde_json::to_string(&ServerMsg::RaceScheduled {
-            room_id: room_id.clone(),
-            start_at_server_time: start_at,
-            race_distance_meters: distance,
-            cutoff_at_server_time: cutoff_at,
-        })
-        .unwrap(),
-    );
-    Ok(Json(json!({ "startAtServerTime": start_at, "raceDistanceMeters": distance, "cutoffAtServerTime": cutoff_at })))
+    let (start_at, cutoff_at) = room.schedule_start(&room_id, now);
+    Ok(Json(json!({ "startAtServerTime": start_at, "raceDistanceMeters": room.race_distance_m, "cutoffAtServerTime": cutoff_at })))
 }
 
 #[derive(Deserialize)]
@@ -544,8 +463,8 @@ async fn admin_create_room(
     check_admin_auth(&st, &headers)?;
 
     if !(100.0..=50_000.0).contains(&req.distance_m)
-        || req.capacity.map_or(false, |c| !(1..=100).contains(&c))
-        || req.cutoff_minutes.map_or(false, |c| !(1..=300).contains(&c))
+        || req.capacity.is_some_and(|c| !(1..=100).contains(&c))
+        || req.cutoff_minutes.is_some_and(|c| !(1..=300).contains(&c))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -678,10 +597,10 @@ async fn admin_create_rule(
     check_admin_auth(&st, &headers)?;
 
     if !(100.0..=50_000.0).contains(&req.distance_m)
-        || req.capacity.map_or(false, |c| !(1..=100).contains(&c))
-        || req.cutoff_minutes.map_or(false, |c| !(1..=300).contains(&c))
-        || req.min_runners.map_or(false, |c| !(1..=100).contains(&c))
-        || req.wait_seconds.map_or(false, |c| c > 3600)
+        || req.capacity.is_some_and(|c| !(1..=100).contains(&c))
+        || req.cutoff_minutes.is_some_and(|c| !(1..=300).contains(&c))
+        || req.min_runners.is_some_and(|c| !(1..=100).contains(&c))
+        || req.wait_seconds.is_some_and(|c| c > 3600)
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -765,8 +684,7 @@ async fn scheduler_task(st: Arc<AppState>) {
             }
         }
 
-        // 檢查每個由規則管理的 OPEN 房間，分三步：人數不足就撤銷排程、
-        // 人數到了才排定開跑時間、額滿或時間到才真正發令。
+        // 檢查每個由規則管理的 OPEN 房間是否該發令。
         // 鎖的順序與上方一致（先 rules 後 rooms），避免死結。
         let rules = st.rules.lock().unwrap();
         let mut rooms = st.rooms.lock().unwrap();
@@ -777,33 +695,20 @@ async fn scheduler_task(st: Arc<AppState>) {
             if room_status(room.closed_at_ms, room.start_at_ms, now) != RoomStatus::Open {
                 continue;
             }
-            let count = room.runners.len() as u32;
-            if count < rule.min_runners {
-                room.auto_start_at_ms = None;
-                continue;
-            }
-            let full = room.capacity.is_some_and(|cap| count >= cap);
-            let due = room.auto_start_at_ms.is_some_and(|t| t <= now);
-            if room.auto_start_at_ms.is_none() && !full {
-                room.auto_start_at_ms = Some(now + rule.wait_seconds as i64 * 1000);
-                continue;
-            }
-            if !(full || due) {
-                continue;
-            }
-            let start_at = now + COUNTDOWN_MS;
-            room.start_at_ms = Some(start_at);
-            room.auto_start_at_ms = None;
-            room.finish_countdown_cutoff_ms = None;
-            let _ = room.tx.send(
-                serde_json::to_string(&ServerMsg::RaceScheduled {
-                    room_id: room_id.clone(),
-                    start_at_server_time: start_at,
-                    race_distance_meters: room.race_distance_m,
-                    cutoff_at_server_time: start_at + room.cutoff_ms,
-                })
-                .unwrap(),
+            let decision = auto_start(
+                room.runners.len() as u32,
+                rule.min_runners,
+                room.capacity,
+                rule.wait_seconds as i64 * 1000,
+                room.auto_start_at_ms,
+                now,
             );
+            match decision {
+                AutoStart::Hold(at) => room.auto_start_at_ms = at,
+                AutoStart::Go => {
+                    room.schedule_start(room_id, now);
+                }
+            }
         }
     }
 }
@@ -814,38 +719,15 @@ async fn ws_upgrade(
     State(st): State<Arc<AppState>>,
 ) -> Result<Response, StatusCode> {
     // ponytail: Token 不設單次失效，否則 §5.2 的自動重連無法沿用同一 Token；上雲前補 TTL
-    let (room_id, role, seed) = {
+    let (room_id, runner_id, role) = {
         let tokens = st.tokens.lock().unwrap();
         let info = tokens.get(&q.token).ok_or(StatusCode::UNAUTHORIZED)?;
-        (
-            info.room_id.clone(),
-            info.role,
-            RunnerState {
-                runner_id: info.runner_id.clone(),
-                name: info.name.clone(),
-                country: info.country.clone(),
-                bib: info.bib.clone(),
-                avatar_url: info.avatar_url.clone(),
-                device_id: info.device_id.clone(),
-                distance: 0.0,
-                pace: "--'--\"".to_string(),
-                speed_kmh: 0.0,
-                cadence: 0,
-                finish_time_ms: None,
-                lane: info.lane,
-                tier: info.tier.clone(),
-                bio: info.bio.clone(),
-                pr5k: info.pr5k.clone(),
-                target_pace: info.target_pace.clone(),
-                vo2_max: info.vo2_max,
-            },
-        )
+        (info.room_id.clone(), info.runner_id.clone(), info.role)
     };
-    Ok(ws.on_upgrade(move |sock| handle_socket(sock, st, room_id, role, seed)))
+    Ok(ws.on_upgrade(move |sock| handle_socket(sock, st, room_id, runner_id, role)))
 }
 
-async fn handle_socket(sock: WebSocket, st: Arc<AppState>, room_id: String, role: Role, seed: RunnerState) {
-    let runner_id = seed.runner_id.clone();
+async fn handle_socket(sock: WebSocket, st: Arc<AppState>, room_id: String, runner_id: String, role: Role) {
     let (mut sink, mut stream) = sock.split();
 
     let (mut brx, scheduled) = {
@@ -856,8 +738,7 @@ async fn handle_socket(sock: WebSocket, st: Arc<AppState>, room_id: String, role
         if role == Role::Runner && !room.runners.contains_key(&runner_id) {
             return;
         }
-        let cutoff = room.closed_at_ms.is_none().then_some(room.cutoff_ms).unwrap_or(0);
-        (room.tx.subscribe(), room.start_at_ms.map(|t| (t, room.race_distance_m, t + cutoff)))
+        (room.tx.subscribe(), room.start_at_ms.map(|t| (t, room.race_distance_m, room.cutoff_at(t))))
     };
 
     // 已排程就補發，讓重連或晚進場的看板端跟上同一個起跑時間
@@ -899,12 +780,16 @@ async fn handle_socket(sock: WebSocket, st: Arc<AppState>, room_id: String, role
                         if role != Role::Runner || t.runner_id != runner_id || t.room_id != room_id {
                             continue;
                         }
+                        let now = now_ms();
                         let mut rooms = st.rooms.lock().unwrap();
                         if let Some(room) = rooms.get_mut(&room_id) {
                             // 房間已關閉時忽略遙測
                             if room.closed_at_ms.is_some() {
                                 continue;
                             }
+                            let Some(t) = vet_telemetry(t, room.start_at_ms, now) else {
+                                continue;
+                            };
                             let distance = room.race_distance_m;
                             if let Some(state) = room.runners.get_mut(&runner_id) {
                                 state.apply(&t, distance);
@@ -954,52 +839,32 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
         tick.tick().await;
         let now = now_ms();
 
-        {
-            let mut rooms = st.rooms.lock().unwrap();
-            let Some(room) = rooms.get_mut(&room_id) else {
-                return;
-            };
+        let mut rooms = st.rooms.lock().unwrap();
+        let Some(room) = rooms.get_mut(&room_id) else {
+            return;
+        };
 
-            // 檢查是否需要結算：房間未關閉且比賽已開始
-            if room.closed_at_ms.is_none() && room.start_at_ms.is_some() {
-                let status = room_status(room.closed_at_ms, room.start_at_ms, now);
-                let should_close = match status {
-                    RoomStatus::Running => {
-                        // 步驟 9：首位選手完賽時，啟動 100 秒衝刺關門倒數
-                        let has_finisher = room.runners.values().any(|r| r.finish_time_ms.is_some());
-                        if has_finisher && room.finish_countdown_cutoff_ms.is_none() {
-                            let sprint_cutoff = now + 100_000;
-                            room.finish_countdown_cutoff_ms = Some(sprint_cutoff);
-                            let _ = room.tx.send(
-                                serde_json::to_string(&ServerMsg::RaceScheduled {
-                                    room_id: room_id.clone(),
-                                    start_at_server_time: room.start_at_ms.unwrap(),
-                                    race_distance_meters: room.race_distance_m,
-                                    cutoff_at_server_time: sprint_cutoff,
-                                })
-                                .unwrap(),
-                            );
-                        }
-
-                        // 全員完賽或超過 Cutoff（100秒衝刺關門或預設關門時間）
-                        let all_finished = !room.runners.is_empty() &&
-                            room.runners.values().all(|r| r.finish_time_ms.is_some());
-                        let sprint_cutoff_reached = room.finish_countdown_cutoff_ms.is_some_and(|t| now >= t);
-                        let general_cutoff_reached = room.start_at_ms.is_some() &&
-                            now >= room.start_at_ms.unwrap() + room.cutoff_ms;
-                        all_finished || sprint_cutoff_reached || general_cutoff_reached
-                    }
-                    _ => false,
-                };
-
-                if should_close {
+        // 比賽進行中才需要結算判定
+        let running_since = room.start_at_ms.filter(|&t| t <= now && room.closed_at_ms.is_none());
+        if let Some(start_at) = running_since {
+            let finished = room.runners.values().filter(|r| r.finish_time_ms.is_some()).count();
+            let cutoff_at = start_at + room.cutoff_ms;
+            match settle(finished, room.runners.len(), cutoff_at, room.finish_countdown_cutoff_ms, now) {
+                Settlement::Continue => {}
+                Settlement::StartSprint(sprint_cutoff) => {
+                    room.finish_countdown_cutoff_ms = Some(sprint_cutoff);
+                    let _ = room.tx.send(
+                        serde_json::to_string(&ServerMsg::RaceScheduled {
+                            room_id: room_id.clone(),
+                            start_at_server_time: start_at,
+                            race_distance_meters: room.race_distance_m,
+                            cutoff_at_server_time: sprint_cutoff,
+                        })
+                        .unwrap(),
+                    );
+                }
+                Settlement::Close(reason) => {
                     room.closed_at_ms = Some(now);
-                    let reason = if !room.runners.is_empty() &&
-                        room.runners.values().all(|r| r.finish_time_ms.is_some()) {
-                        "ALL_FINISHED"
-                    } else {
-                        "CUTOFF"
-                    };
                     let _ = room.tx.send(
                         serde_json::to_string(&ServerMsg::RaceClosed {
                             room_id: room_id.clone(),
@@ -1012,19 +877,12 @@ async fn broadcast_loop(st: Arc<AppState>, room_id: String) {
             }
         }
 
-        let mut rooms = st.rooms.lock().unwrap();
-        let Some(room) = rooms.get_mut(&room_id) else {
-            return;
-        };
-
         // 移除10分鐘前已關閉的房間
-        if let Some(closed_at) = room.closed_at_ms {
-            if now >= closed_at + 10 * 60 * 1000 {
-                rooms.remove(&room_id);
-                drop(rooms);
-                st.tokens.lock().unwrap().retain(|_, info| info.room_id != room_id);
-                return;
-            }
+        if room.closed_at_ms.is_some_and(|t| now >= t + 10 * 60 * 1000) {
+            rooms.remove(&room_id);
+            drop(rooms);
+            st.tokens.lock().unwrap().retain(|_, info| info.room_id != room_id);
+            return;
         }
 
         if room.tx.receiver_count() == 0 {

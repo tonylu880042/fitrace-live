@@ -78,6 +78,7 @@ pub enum ClientMsg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // 訊息建完即序列化送出，不會成批存放，Box 沒有好處
 pub enum ServerMsg {
     #[serde(rename = "PONG", rename_all = "camelCase")]
     Pong { client_send_time: i64, server_time: i64 },
@@ -103,7 +104,6 @@ pub enum ServerMsg {
         bib: Option<String>,
         avatar_url: Option<String>,
         lane: Option<u32>,
-        device_id: Option<String>,
         field_size: usize,
         capacity: Option<u32>,
         tier: Option<String>,
@@ -153,6 +153,84 @@ impl RunnerState {
         self.pace = t.current_pace.clone();
         self.speed_kmh = t.current_speed;
         self.cadence = t.cadence;
+    }
+}
+
+/// 完賽時間容許超前伺服器時鐘的上限：校時（§3.1）誤差的寬限，實測偏差更大時再調。
+pub const CLOCK_SLACK_MS: i64 = 1000;
+
+/// 信任邊界：把一筆遙測修成伺服器願意採信的樣子，整筆不可信則回傳 `None`。
+/// 開跑前只留速度/步頻（大螢幕熱身顯示），距離與成績一律不算；
+/// 開跑後的完賽時間必須落在起跑之後、現在之前。
+pub fn vet_telemetry(mut t: Telemetry, start_at_ms: Option<i64>, now_ms: i64) -> Option<Telemetry> {
+    let Some(start_at) = start_at_ms.filter(|&s| s <= now_ms) else {
+        t.current_distance = 0.0;
+        t.finish_time_ms = None;
+        return Some(t);
+    };
+    let finish_ok = t.finish_time_ms.is_none_or(|f| (start_at..=now_ms + CLOCK_SLACK_MS).contains(&f));
+    (t.current_distance >= 0.0 && finish_ok).then_some(t)
+}
+
+/// 首位選手完賽後，其餘選手的衝刺關門時間（§9.1）。
+pub const SPRINT_CUTOFF_MS: i64 = 100_000;
+
+#[derive(Debug, PartialEq)]
+pub enum Settlement {
+    Continue,
+    /// 首位選手剛完賽：啟動衝刺關門倒數，值為新的關門時刻
+    StartSprint(i64),
+    /// 結算，值為 `RACE_CLOSED` 的 reason
+    Close(&'static str),
+}
+
+/// 比賽進行中每個 tick 的結算判定。`cutoff_at_ms` 是一般關門時刻，
+/// `sprint_cutoff_ms` 是已啟動的衝刺關門時刻（不會晚於一般關門）。
+pub fn settle(
+    finished: usize,
+    total: usize,
+    cutoff_at_ms: i64,
+    sprint_cutoff_ms: Option<i64>,
+    now_ms: i64,
+) -> Settlement {
+    if total > 0 && finished == total {
+        Settlement::Close("ALL_FINISHED")
+    } else if now_ms >= sprint_cutoff_ms.unwrap_or(cutoff_at_ms) {
+        Settlement::Close("CUTOFF")
+    } else if finished > 0 && sprint_cutoff_ms.is_none() {
+        Settlement::StartSprint((now_ms + SPRINT_CUTOFF_MS).min(cutoff_at_ms))
+    } else {
+        Settlement::Continue
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AutoStart {
+    /// 還不發令；值為預定發令時刻（`None` = 人數不足，撤銷排程）
+    Hold(Option<i64>),
+    Go,
+}
+
+/// 自動規則（§9.2）每個 tick 對 OPEN 房間的判定：
+/// 人數不足就撤銷排程、人數到了才開始倒數、額滿或倒數結束才發令。
+pub fn auto_start(
+    count: u32,
+    min_runners: u32,
+    capacity: Option<u32>,
+    wait_ms: i64,
+    auto_start_at_ms: Option<i64>,
+    now_ms: i64,
+) -> AutoStart {
+    if count < min_runners {
+        return AutoStart::Hold(None);
+    }
+    if capacity.is_some_and(|cap| count >= cap) {
+        return AutoStart::Go;
+    }
+    match auto_start_at_ms {
+        None => AutoStart::Hold(Some(now_ms + wait_ms)),
+        Some(t) if t <= now_ms => AutoStart::Go,
+        at => AutoStart::Hold(at),
     }
 }
 
@@ -350,6 +428,63 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_before_the_gun_cannot_score() {
+        let (start, now) = (10_000, 9_000);
+        // 倒數中送來的「完賽」封包：速度留著，距離與成績歸零
+        for start_at in [None, Some(start)] {
+            let t = vet_telemetry(telemetry(5000.0, Some(9_500)), start_at, now).unwrap();
+            assert_eq!((t.current_distance, t.finish_time_ms), (0.0, None));
+            assert_eq!(t.current_speed, 18.0);
+        }
+    }
+
+    #[test]
+    fn finish_time_must_fall_inside_the_race() {
+        let (start, now) = (10_000, 70_000);
+        let vet = |finish| vet_telemetry(telemetry(5000.0, finish), Some(start), now).is_some();
+        assert!(vet(None));
+        assert!(vet(Some(69_800)));
+        assert!(vet(Some(now + CLOCK_SLACK_MS))); // 校時誤差寬限內
+        assert!(!vet(Some(start - 1))); // 起跑前就完賽
+        assert!(!vet(Some(now + CLOCK_SLACK_MS + 1))); // 未來的成績
+        assert!(vet_telemetry(telemetry(-1.0, None), Some(start), now).is_none());
+    }
+
+    #[test]
+    fn settlement_follows_sprint_and_cutoff_rules() {
+        let (cutoff, now) = (3_000_000, 1_000_000);
+        // 無人完賽、未到關門：繼續
+        assert_eq!(settle(0, 3, cutoff, None, now), Settlement::Continue);
+        // 首位完賽：啟動 100 秒衝刺關門，且只啟動一次
+        assert_eq!(settle(1, 3, cutoff, None, now), Settlement::StartSprint(now + SPRINT_CUTOFF_MS));
+        assert_eq!(settle(1, 3, cutoff, Some(now + 50_000), now), Settlement::Continue);
+        // 衝刺關門不會晚於一般關門
+        assert_eq!(settle(1, 3, now + 30_000, None, now), Settlement::StartSprint(now + 30_000));
+        // 衝刺關門到、一般關門到、全員完賽
+        assert_eq!(settle(1, 3, cutoff, Some(now), now), Settlement::Close("CUTOFF"));
+        assert_eq!(settle(0, 3, now, None, now), Settlement::Close("CUTOFF"));
+        assert_eq!(settle(3, 3, cutoff, Some(now + 50_000), now), Settlement::Close("ALL_FINISHED"));
+        // 單人賽完賽：直接結算，不必先倒數
+        assert_eq!(settle(1, 1, cutoff, None, now), Settlement::Close("ALL_FINISHED"));
+    }
+
+    #[test]
+    fn auto_start_waits_for_runners_then_counts_down() {
+        let now = 50_000;
+        let wait = 60_000;
+        // 人數不足：撤銷已排定的倒數
+        assert_eq!(auto_start(1, 2, Some(8), wait, Some(now + 10_000), now), AutoStart::Hold(None));
+        // 人數剛到：開始倒數；倒數中維持原時刻
+        assert_eq!(auto_start(2, 2, Some(8), wait, None, now), AutoStart::Hold(Some(now + wait)));
+        assert_eq!(auto_start(3, 2, Some(8), wait, Some(now + 10_000), now), AutoStart::Hold(Some(now + 10_000)));
+        // 倒數結束或額滿：發令
+        assert_eq!(auto_start(2, 2, Some(8), wait, Some(now), now), AutoStart::Go);
+        assert_eq!(auto_start(8, 2, Some(8), wait, None, now), AutoStart::Go);
+        // 不設上限就只看倒數
+        assert_eq!(auto_start(50, 2, None, wait, Some(now + 1), now), AutoStart::Hold(Some(now + 1)));
+    }
+
+    #[test]
     fn room_status_follows_the_race_lifecycle() {
         let now = 10_000;
 
@@ -462,7 +597,6 @@ mod tests {
             bib: Some("03".to_string()),
             avatar_url: Some("https://example.com/avatar.jpg".to_string()),
             lane: Some(3),
-            device_id: Some("treadmill-03".to_string()),
             field_size: 6,
             capacity: Some(8),
             tier: Some("WORLD CLASS TIER".to_string()),
@@ -478,6 +612,8 @@ mod tests {
         assert!(json_str.contains("\"runnerId\":\"R_ELIUD\""));
         assert!(json_str.contains("\"name\":\"Eliud Kipchoge\""));
         assert!(json_str.contains("\"lane\":3"));
+        // deviceId 是裝置綁定的憑證，不可出現在廣播裡
+        assert!(!json_str.contains("deviceId"));
         assert!(json_str.contains("\"fieldSize\":6"));
         assert!(json_str.contains("\"capacity\":8"));
         assert!(json_str.contains("\"vo2Max\":84.2"));
