@@ -52,11 +52,15 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -135,10 +139,20 @@ enum class RaceViewMode { COCKPIT, LEADERBOARD }
 
 data class Profile(
     val host: String = "10.0.2.2:8080", // 模擬器要透過 10.0.2.2 才能連到開發機的 localhost
-    val runnerId: String = "RUNNER_01",
-    val name: String = "Alex Chen",
+    /** 由暱稱推得，見 [runnerIdOf]；空字串表示還沒輸入暱稱 */
+    val runnerId: String = "",
+    /** 選手輸入的暱稱，原樣顯示在榜單上 */
+    val name: String = "",
     val country: String = "TW",
 )
+
+const val NICKNAME_MAX = 16
+
+/**
+ * 暱稱即身分：成績以選手 ID 記錄，而選手 ID 就是正規化後的暱稱
+ * （去頭尾空白、連續空白併成一個、不分大小寫），同一個人每次輸入才會對到同一筆紀錄。
+ */
+fun runnerIdOf(nickname: String): String = nickname.trim().replace(Regex("\\s+"), " ").lowercase()
 
 data class RunnerJoinedAlert(
     val event: RunnerJoinedEvent,
@@ -289,23 +303,20 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     private fun loadProfileFromPrefs(): Profile? {
         val host = prefs.getString("host", null) ?: return null
-        val runnerId = prefs.getString("runnerId", null) ?: return null
-        val name = prefs.getString("name", null) ?: return null
-        val country = prefs.getString("country", null) ?: ""
-        return Profile(host, runnerId, name, country)
+        val name = prefs.getString("name", null) ?: ""
+        return Profile(host, runnerIdOf(name), name, prefs.getString("country", null) ?: "")
     }
 
     private fun saveProfileToPrefs(profile: Profile) {
         prefs.edit().apply {
             putString("host", profile.host)
-            putString("runnerId", profile.runnerId)
             putString("name", profile.name)
             putString("country", profile.country)
         }.apply()
     }
 
     init {
-        // 加載之前保存的個人資料作為初始狀態
+        // 載入這台機器上次的設定與暱稱；啟動畫面會預填，確認或改掉再進大廳
         loadProfileFromPrefs()?.let { profile ->
             _state.value = _state.value.copy(profile = profile)
         }
@@ -324,7 +335,9 @@ class RaceViewModel(app: Application) : AndroidViewModel(app), RaceClient.Listen
 
     fun editProfile() {
         main.removeCallbacks(lobbyPoll)
-        _state.value = _state.value.copy(screen = Screen.PROFILE)
+        // 回到暱稱畫面就是要換人，清掉欄位讓下一位輸入（存檔的暱稱等他進大廳才會被取代）
+        val s = _state.value
+        _state.value = s.copy(screen = Screen.PROFILE, profile = s.profile.copy(runnerId = "", name = ""))
     }
 
     /** 每 2 秒刷新一次大廳；只在大廳畫面時才跑。 */
@@ -1026,10 +1039,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun Setup(initial: Profile, vm: RaceViewModel) {
-    var host by remember { mutableStateOf(initial.host) }
-    var id by remember { mutableStateOf(initial.runnerId) }
-    var name by remember { mutableStateOf(initial.name) }
-    var country by remember { mutableStateOf(initial.country) }
+    var name by remember(initial.name) { mutableStateOf(initial.name) }
+    var host by remember(initial.host) { mutableStateOf(initial.host) }
+    var country by remember(initial.country) { mutableStateOf(initial.country) }
+    // 伺服器位址、國碼與展示用按鈕是場館／開發設定，會員只需要看到暱稱
+    var showSettings by remember { mutableStateOf(false) }
+    val ready = runnerIdOf(name).isNotEmpty()
+    val profile = { Profile(host.trim(), runnerIdOf(name), name.trim(), country.trim().uppercase()) }
+    val enter = { if (ready) vm.enterLobby(profile()) }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Carbon).drawBehind { ambientBackdrop() }) {
         val k = min(maxWidth.value / 1280f, maxHeight.value / 800f)
@@ -1043,7 +1060,7 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
                 .padding(horizontal = (40 * k).dp, vertical = (32 * k).dp),
             verticalArrangement = Arrangement.spacedBy((12 * k).dp),
         ) {
-            SoftLabel("ATHLETE PROFILE", Cyan, k, 15f)
+            SoftLabel("WELCOME", Cyan, k, 15f)
             Text(
                 "Ready to race?", color = Color.White, fontFamily = Grotesk, fontWeight = FontWeight.Bold,
                 fontSize = (30 * k).sp, letterSpacing = (-0.4 * k).sp,
@@ -1056,42 +1073,43 @@ private fun Setup(initial: Profile, vm: RaceViewModel) {
                 focusedLabelColor = Cyan, unfocusedLabelColor = Label, cursorColor = Cyan,
                 focusedContainerColor = Cyan.copy(alpha = .05f), unfocusedContainerColor = Color.White.copy(alpha = .03f),
             )
-            listOf(
-                Triple("伺服器", host) { v: String -> host = v },
-                Triple("選手 ID", id) { v: String -> id = v },
-                Triple("姓名", name) { v: String -> name = v },
-                Triple("國碼 (ISO 兩碼)", country) { v: String -> country = v },
-            ).forEach { (label, value, set) ->
-                OutlinedTextField(
-                    value = value, onValueChange = set,
-                    label = { Text(label, fontFamily = Grotesk, fontWeight = FontWeight.Medium) },
-                    textStyle = TextStyle(fontFamily = Grotesk, fontWeight = FontWeight.Medium, fontSize = (17 * k).sp),
-                    singleLine = true, shape = shape, colors = colors, modifier = Modifier.fillMaxWidth(),
-                )
+            @Composable
+            fun Field(label: String, value: String, set: (String) -> Unit) = OutlinedTextField(
+                value = value, onValueChange = set,
+                label = { Text(label, fontFamily = Grotesk, fontWeight = FontWeight.Medium) },
+                textStyle = TextStyle(fontFamily = Grotesk, fontWeight = FontWeight.Medium, fontSize = (17 * k).sp),
+                singleLine = true, shape = shape, colors = colors, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { enter() }),
+            )
+            Field("你的暱稱 / Nickname", name) { name = it.take(NICKNAME_MAX) }
+            if (showSettings) {
+                Field("伺服器", host) { host = it }
+                Field("國碼 (ISO 兩碼)", country) { country = it }
             }
             Spacer(Modifier.height((8 * k).dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy((10 * k).dp)) {
-                Box(Modifier.weight(1.1f)) {
-                    PrimaryPill("ENTER LOBBY", k) {
-                        vm.enterLobby(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
+            Box(Modifier.alpha(if (ready) 1f else .35f)) { PrimaryPill("ENTER LOBBY", k, enter) }
+            if (showSettings) {
+                // 展示用：不連伺服器，直接看 HUD 與賽前畫面
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy((10 * k).dp)) {
+                    Box(Modifier.weight(1f)) {
+                        SecondaryPill("VERIFY HUD", k) { if (ready) vm.enterVerificationRace(profile()) }
                     }
-                }
-                Box(Modifier.weight(0.95f)) {
-                    SecondaryPill("VERIFY HUD", k) {
-                        vm.enterVerificationRace(Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()))
-                    }
-                }
-                Box(Modifier.weight(1.05f)) {
-                    SecondaryPill("PRE-RACE HEAT", k) {
-                        vm.enterVerificationRace(
-                            Profile(host.trim(), id.trim(), name.trim(), country.trim().uppercase()),
-                            cockpitMode = true,
-                            preRaceCountdownSec = 6,
-                        )
-                        vm.triggerMockRunnerJoinedAlert()
+                    Box(Modifier.weight(1f)) {
+                        SecondaryPill("PRE-RACE HEAT", k) {
+                            if (ready) {
+                                vm.enterVerificationRace(profile(), cockpitMode = true, preRaceCountdownSec = 6)
+                                vm.triggerMockRunnerJoinedAlert()
+                            }
+                        }
                     }
                 }
             }
+            Box(
+                Modifier.align(Alignment.End).clip(RoundedCornerShape(50))
+                    .clickable { showSettings = !showSettings }
+                    .padding(horizontal = (10 * k).dp, vertical = (6 * k).dp),
+            ) { SoftLabel(if (showSettings) "HIDE SETTINGS" else "SETTINGS", Label, k, 11f) }
         }
     }
 }
@@ -4138,7 +4156,6 @@ private fun LobbyTopBar(s: RaceUiState, vm: RaceViewModel, k: Float) = Row(
                 s.profile.name, color = Color.White, fontFamily = Grotesk,
                 fontWeight = FontWeight.Bold, fontSize = (18 * k).sp, lineHeight = (20 * k).sp, maxLines = 1,
             )
-            SoftLabel(s.profile.runnerId, Label, k, 11f)
         }
         Spacer(Modifier.width((16 * k).dp))
         Box(
@@ -4146,7 +4163,7 @@ private fun LobbyTopBar(s: RaceUiState, vm: RaceViewModel, k: Float) = Row(
                 .border((1 * k).dp, Color.White.copy(alpha = .25f), RoundedCornerShape(50))
                 .clickable { vm.editProfile() }
                 .padding(horizontal = (16 * k).dp, vertical = (8 * k).dp),
-        ) { SoftLabel("EDIT PROFILE", Color.White, k, 12f) }
+        ) { SoftLabel("SWITCH RUNNER", Color.White, k, 12f) }
     }
 
     Spacer(Modifier.width((20 * k).dp))

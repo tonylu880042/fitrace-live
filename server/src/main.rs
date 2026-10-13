@@ -28,6 +28,8 @@ const COUNTDOWN_MS: i64 = 5000; // §3.2
 const DEFAULT_CAPACITY: u32 = 10;
 /// 重啟後先不結算的時間，讓選手端重連回報斷線期間的進度（選手端重連退避上限 10 秒）。
 const RESUME_GRACE_MS: i64 = 10_000;
+/// 選手 ID 與顯示名稱的字元數上限：兩者都是使用者輸入，會轉播給全房並顯示在大螢幕上。
+const MAX_NAME_CHARS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -438,6 +440,14 @@ async fn issue_token(
     let role = req.role.unwrap_or(Role::Runner);
     let now = now_ms();
     let runner_id = req.runner_id;
+    if runner_id.trim().is_empty() || runner_id.chars().count() > MAX_NAME_CHARS {
+        return Err(err(StatusCode::BAD_REQUEST, "INVALID_RUNNER_ID"));
+    }
+    // 空白名稱視同沒給，改用選手 ID 顯示
+    let name = req.name.filter(|n| !n.trim().is_empty());
+    if name.as_ref().is_some_and(|n| n.chars().count() > MAX_NAME_CHARS) {
+        return Err(err(StatusCode::BAD_REQUEST, "INVALID_NAME"));
+    }
     let device_id = req.device_id.as_deref().unwrap_or("").trim().to_string();
     if role == Role::Runner && device_id.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "DEVICE_ID_REQUIRED"));
@@ -483,7 +493,7 @@ async fn issue_token(
                     room.runners.values().filter_map(|r| r.lane).collect();
                 (1..=100).find(|l| !used.contains(l))
             });
-            let name = req.name.unwrap_or_else(|| runner_id.clone());
+            let name = name.unwrap_or_else(|| runner_id.clone());
             room.runners.insert(
                 runner_id.clone(),
                 RunnerState {
